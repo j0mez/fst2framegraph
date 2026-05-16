@@ -128,7 +128,7 @@ def write_framebase_manifest(out_dir: Path, downloads: Iterable[FrameBaseDownloa
         "attribution": "FrameBase team at Aalborg University and Rutgers University",
         "website": FRAMEBASE_WEBSITE,
         "data_page": FRAMEBASE_DATA_PAGE,
-        "downloaded_or_validated_at_utc": _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat(),
+        "downloaded_or_validated_at_utc": _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat(),
         "files": files,
     }
     out_dir.mkdir(parents=True, exist_ok=True)

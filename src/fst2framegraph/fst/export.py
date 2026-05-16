@@ -11,7 +11,7 @@ import sys
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +67,7 @@ ERROR_FIELDS = [
 
 
 def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
