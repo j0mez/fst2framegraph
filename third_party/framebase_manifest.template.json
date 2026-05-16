@@ -1,0 +1,28 @@
+{
+  "source": "FrameBase",
+  "version": "2.0",
+  "license": "Creative Commons Attribution 4.0 International",
+  "attribution": "FrameBase team at Aalborg University and Rutgers University",
+  "website": "https://www.framebase.org/",
+  "data_page": "https://www.framebase.org/data",
+  "files": [
+    {
+      "key": "core_schema",
+      "name": "FrameBase_schema_core.ttl.gz",
+      "url": "https://www.framebase.org/files/data/dump/schema/FrameBase_schema_core.ttl.gz",
+      "sha256": null
+    },
+    {
+      "key": "dbp_labels",
+      "name": "FrameBase_schema_dbps.ttl.gz",
+      "url": "https://www.framebase.org/files/data/dump/schema/FrameBase_schema_dbps.ttl.gz",
+      "sha256": null
+    },
+    {
+      "key": "dereification_rules_sparql",
+      "name": "dereificationRulesSparqlFormat.txt.zip",
+      "url": "https://www.framebase.org/files/data/reder_rules/dereificationRulesSparqlFormat.txt.zip",
+      "sha256": null
+    }
+  ]
+}

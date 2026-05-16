@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# virtual envs
+.venv/
+venv/
+
+# local outputs
+outputs/
+*.log
+
+# local FrameBase cache: keep docs, not full downloaded data
+/data/framebase/*
+!/data/framebase/.gitkeep
+!/data/framebase/README.md
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
