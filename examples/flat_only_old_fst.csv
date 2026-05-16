@@ -1,0 +1,6 @@
+doc_id,sentence_id,sentence,frame_name,target_text,element_name,element_filler
+doc1,s1,Technology can help consumers reduce emissions.,Assistance,help,Helper,Technology
+doc1,s1,Technology can help consumers reduce emissions.,Assistance,help,Benefited_party,consumers
+doc1,s1,Technology can help consumers reduce emissions.,Assistance,help,Goal,reduce emissions
+doc2,s2,Public transit reduces congestion in dense neighborhoods.,Cause_change_of_position_on_a_scale,reduces,Agent,Public transit
+doc2,s2,Public transit reduces congestion in dense neighborhoods.,Cause_change_of_position_on_a_scale,reduces,Entity,congestion

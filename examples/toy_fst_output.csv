@@ -1,0 +1,8 @@
+doc_id,sentence_id,sentence,frame_index,frame_name,target_text,element_name,element_filler
+ad_001,s1,Technology can help consumers reduce emissions.,0,Assistance,help,Helper,Technology
+ad_001,s1,Technology can help consumers reduce emissions.,0,Assistance,help,Benefited_party,consumers
+ad_001,s1,Technology can help consumers reduce emissions.,0,Assistance,help,Goal,reduce emissions
+ad_001,s1,Technology can help consumers reduce emissions.,1,Cause_change,reduce,Agent,consumers
+ad_001,s1,Technology can help consumers reduce emissions.,1,Cause_change,reduce,Entity,emissions
+ad_002,s1,Fossil fuel combustion causes atmospheric CO2 to increase.,0,Causation,causes,Cause,Fossil fuel combustion
+ad_002,s1,Fossil fuel combustion causes atmospheric CO2 to increase.,0,Causation,causes,Effect,atmospheric CO2 to increase

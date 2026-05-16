@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+message: "If you use fst2framegraph, please cite this software and the upstream resources that enabled your analysis."
+title: "fst2framegraph: Resumable Frame Semantic Transformer outputs and FrameBase-compatible nested graphs"
+version: "0.3.1"
+date-released: "2026-05-16"
+authors:
+  - name: "fst2framegraph contributors"
+license: Apache-2.0
+abstract: >
+  A Python infrastructure package for running Frame Semantic Transformer over text,
+  saving clean resumable no-pickle outputs, and converting FrameNet-style parser
+  outputs into reified, nested, and optionally FrameBase-dereified graph representations.
+keywords:
+  - FrameNet
+  - FrameBase
+  - frame semantic parsing
+  - knowledge graphs
+  - semantic role labelling
+references:
+  - type: article
+    title: "Open-source Frame Semantic Parsing"
+    authors:
+      - family-names: "Chanin"
+        given-names: "David"
+    year: 2023
+    url: "https://arxiv.org/abs/2303.12788"
+  - type: conference-paper
+    title: "The Berkeley FrameNet Project"
+    authors:
+      - family-names: "Baker"
+        given-names: "Collin F."
+      - family-names: "Fillmore"
+        given-names: "Charles J."
+      - family-names: "Lowe"
+        given-names: "John B."
+    year: 1998
+    doi: "10.3115/980845.980860"
+  - type: article
+    title: "FrameBase: Enabling integration of heterogeneous knowledge"
+    authors:
+      - family-names: "Rouces"
+        given-names: "Jacobo"
+      - family-names: "de Melo"
+        given-names: "Gerard"
+      - family-names: "Hose"
+        given-names: "Katja"
+    year: 2017
+    doi: "10.3233/SW-170279"
