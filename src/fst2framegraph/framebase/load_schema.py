@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fst2framegraph.framebase.iri import fe_iri, frame_iri
+from fst2framegraph.framebase.stream_rdf import RDFS_LABEL, iter_triples
 from fst2framegraph.normalise.text import clean_text
 
 
@@ -90,6 +91,22 @@ class FrameBaseSchema:
         if path is None:
             return cls.empty()
         schema = cls.empty()
+        for triple in iter_triples(path):
+            iri = triple.subject
+            if triple.predicate == RDFS_LABEL and triple.object_kind == "literal":
+                schema.labels[iri] = clean_text(triple.object)
+            if "/frame/" in iri or _tail(iri).startswith(("Microframe.", "frame.")):
+                name = _frame_from_resource(iri)
+                if name:
+                    schema.frame_lookup.setdefault(name, iri)
+            if "/fe/" in iri or _tail(iri).startswith("fe.") or ".has_" in _tail(iri):
+                frame_name, fe_name = _fe_from_resource(iri)
+                if frame_name and fe_name:
+                    for key in _lookup_keys(frame_name, fe_name):
+                        schema.fe_lookup.setdefault(key, iri)
+        if schema.frame_lookup or schema.fe_lookup or schema.labels:
+            return schema
+
         with _open_text(path) as fh:
             for line in fh:
                 match = LABEL_RE.search(line)

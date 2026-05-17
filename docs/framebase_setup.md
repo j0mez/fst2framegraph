@@ -29,6 +29,10 @@ or:
 fst2framegraph build-framebase-index --framebase-dir data/framebase
 ```
 
+On current full FrameBase 2.0 dumps, the first index build may take a couple of minutes. This is
+expected and only needs to happen once per source refresh. The generated
+`framebase_index.sqlite` file is the runtime artefact used by normal graph builds.
+
 Expected current FrameBase 2.0 source files can be compressed or uncompressed:
 
 ```text
@@ -46,6 +50,13 @@ The index is written as:
 
 ```text
 data/framebase/framebase_index.sqlite
+```
+
+If you want to inspect only a subset of SPIN rules during indexing, you can cap SPIN rule
+extraction:
+
+```bash
+fst2framegraph build-framebase-index --framebase-dir data/framebase --spin-limit 1000
 ```
 
 ## Runtime builds

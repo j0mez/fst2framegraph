@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from fst2framegraph.framebase.iri import dbp_label_from_iri
+from fst2framegraph.framebase.stream_rdf import FRAMEBASE_HAS_LEXICAL_FORM, RDFS_LABEL, iter_triples
 from fst2framegraph.normalise.text import clean_text
 
 
@@ -21,6 +22,15 @@ def load_dbp_labels(path: Path | None) -> dict[str, str]:
     if path is None:
         return {}
     labels: dict[str, str] = {}
+    for triple in iter_triples(path):
+        iri = triple.subject
+        if "/dbp/" not in iri:
+            continue
+        labels.setdefault(iri, dbp_label_from_iri(iri))
+        if triple.object_kind == "literal" and triple.predicate in {RDFS_LABEL, FRAMEBASE_HAS_LEXICAL_FORM}:
+            labels[iri] = clean_text(triple.object)
+    if labels:
+        return labels
     with _open_text(path) as fh:
         for line in fh:
             match = LABEL_RE.search(line)
