@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -47,6 +49,7 @@ from fst2framegraph.schema import ColumnMap
 
 app = typer.Typer(help="Convert FrameNet-style parser output into FrameBase-compatible graphs.")
 console = Console()
+WS_RE = re.compile(r"\s+")
 
 CANONICAL_RUN_FILES = [
     "fst_clean.jsonl",
@@ -149,6 +152,9 @@ def _run_command(
     device: str = "auto",
     dedupe: bool = True,
     dedupe_normalise: str = "exact",
+    chunk_transcripts: bool = True,
+    chunk_min_words: int = 2,
+    chunk_max_words: int = 70,
     plan: bool = False,
     yes: bool = False,
     interactive: bool = False,
@@ -182,6 +188,12 @@ def _run_command(
         parts.append("--no-dedupe")
     if dedupe_normalise != "exact":
         parts.extend(["--dedupe-normalise", dedupe_normalise])
+    if not chunk_transcripts:
+        parts.append("--no-chunk-transcripts")
+    if chunk_min_words != 2:
+        parts.extend(["--chunk-min-words", str(chunk_min_words)])
+    if chunk_max_words != 70:
+        parts.extend(["--chunk-max-words", str(chunk_max_words)])
     if plan:
         parts.append("--dry-run")
     if yes:
@@ -243,6 +255,133 @@ def _looks_like_raw_text_table(path: Path, text_col: str) -> bool:
     return not has_graph_columns and not has_flat_columns
 
 
+def _clean_transcript_text(text: object) -> str:
+    value = "" if text is None else str(text)
+    if not value:
+        return ""
+    value = re.sub(r"\[ad text:\]|\[audio transcript:\]|\[video transcript:\]|\[text:\]|\[audio:\]", " ", value, flags=re.I)
+    value = re.sub(r"https?://\S+|www\.\S+", " ", value)
+    value = value.replace("\r", "\n")
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{2,}", "\n", value)
+    return value.strip()
+
+
+def _normalise_chunk_for_dedupe(text: str) -> str:
+    return WS_RE.sub(" ", text).strip().lower()
+
+
+def _stable_chunk_hash(text: str) -> str:
+    key = _normalise_chunk_for_dedupe(text)
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def _split_into_chunks(text: str, *, min_words: int, max_words: int) -> list[str]:
+    text = _clean_transcript_text(text)
+    if not text:
+        return []
+
+    rough_parts: list[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        rough_parts.extend(re.split(r"(?<=[.!?])\s+", line))
+
+    chunks: list[str] = []
+    for part in rough_parts:
+        part = WS_RE.sub(" ", part).strip()
+        if not part:
+            continue
+        words = part.split()
+        if len(words) < min_words:
+            continue
+        if len(words) <= max_words:
+            chunks.append(part)
+            continue
+        subparts = re.split(r"(?<=[,;:])\s+", part)
+        buffer: list[str] = []
+        for sub in subparts:
+            sub_words = sub.split()
+            if len(buffer) + len(sub_words) <= max_words:
+                buffer.extend(sub_words)
+            else:
+                if len(buffer) >= min_words:
+                    chunks.append(" ".join(buffer).strip())
+                buffer = sub_words
+        if len(buffer) >= min_words:
+            chunks.append(" ".join(buffer).strip())
+
+    # De-duplicate only within one source row.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for chunk in chunks:
+        key = _normalise_chunk_for_dedupe(chunk)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(chunk)
+    return deduped
+
+
+def _build_chunked_sentence_table(
+    *,
+    input_path: Path,
+    text_col: str,
+    id_col: str | None,
+    doc_col: str | None,
+    min_chunk_words: int,
+    max_chunk_words: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    source = pd.read_csv(input_path)
+    for required in [text_col]:
+        if required not in source.columns:
+            raise ValueError(f"Missing required column for transcript chunking: {required}")
+
+    rows: list[dict[str, object]] = []
+    mapping_rows: list[dict[str, object]] = []
+    global_index = 0
+    for row_index, row in source.iterrows():
+        raw_text = row.get(text_col)
+        chunks = _split_into_chunks(
+            raw_text,
+            min_words=min_chunk_words,
+            max_words=max_chunk_words,
+        )
+        if not chunks:
+            continue
+        raw_sentence_id = str(row.get(id_col) if id_col and id_col in source.columns else f"row_{row_index}")
+        raw_doc_id = str(row.get(doc_col) if doc_col and doc_col in source.columns else raw_sentence_id)
+        for chunk_index, chunk in enumerate(chunks):
+            chunk_id = f"{raw_sentence_id}__chunk_{chunk_index:03d}"
+            unique_chunk_id = _stable_chunk_hash(chunk)
+            rows.append(
+                {
+                    "sentence_id": chunk_id,
+                    "doc_id": raw_doc_id,
+                    "sentence": chunk,
+                }
+            )
+            mapping_rows.append(
+                {
+                    "row_index": int(row_index),
+                    "source_sentence_id": raw_sentence_id,
+                    "source_doc_id": raw_doc_id,
+                    "chunk_index": chunk_index,
+                    "sentence_id": chunk_id,
+                    "unique_chunk_id": unique_chunk_id,
+                    "chunk_text": chunk,
+                    "chunk_word_count": len(chunk.split()),
+                    "global_chunk_row": global_index,
+                }
+            )
+            global_index += 1
+
+    if not rows:
+        return pd.DataFrame(columns=["sentence_id", "doc_id", "sentence"]), pd.DataFrame()
+    return pd.DataFrame(rows), pd.DataFrame(mapping_rows)
+
+
 def _plan_label(inspection: dict[str, object], *, raw_text: bool) -> str:
     if raw_text:
         return "raw sentence CSV"
@@ -277,6 +416,9 @@ def _print_run_plan(
     device: str,
     dedupe: bool,
     dedupe_normalise: str,
+    chunk_transcripts: bool,
+    chunk_min_words: int,
+    chunk_max_words: int,
 ) -> None:
     detected = _plan_label(inspection, raw_text=raw_text)
     actions: list[str] = []
@@ -284,6 +426,12 @@ def _print_run_plan(
         actions.extend(
             [
                 f"run FrameSemanticTransformer into canonical run directory: {out}",
+                (
+                    f"chunk transcript rows into sentence-like chunks "
+                    f"({chunk_min_words}-{chunk_max_words} words)"
+                    if chunk_transcripts
+                    else "do not split transcript rows into chunks"
+                ),
                 "dedupe identical input texts before FST inference" if dedupe else "run FST once per input row",
                 "materialise CSV/report outputs",
                 "run doctor checks",
@@ -338,6 +486,9 @@ def _print_run_plan(
             device=device,
             dedupe=dedupe,
             dedupe_normalise=dedupe_normalise,
+            chunk_transcripts=chunk_transcripts,
+            chunk_min_words=chunk_min_words,
+            chunk_max_words=chunk_max_words,
         )
     )
 
@@ -997,6 +1148,21 @@ def run_workflow(
         "--dedupe-normalise",
         help="Text dedupe mode for raw input: exact or normalised.",
     ),
+    chunk_transcripts: bool = typer.Option(
+        True,
+        "--chunk-transcripts/--no-chunk-transcripts",
+        help="Split transcript-like rows into sentence chunks before FST.",
+    ),
+    chunk_min_words: int = typer.Option(
+        2,
+        "--chunk-min-words",
+        help="Minimum words per generated transcript chunk.",
+    ),
+    chunk_max_words: int = typer.Option(
+        70,
+        "--chunk-max-words",
+        help="Maximum words per generated transcript chunk.",
+    ),
     plan: bool = typer.Option(False, "--plan", "--dry-run", help="Inspect and print planned actions without writing files."),
     yes: bool = typer.Option(False, "--yes", help="Skip non-risky confirmations."),
     interactive: bool = typer.Option(False, "--interactive", help="Ask guided questions when helpful."),
@@ -1031,6 +1197,9 @@ def run_workflow(
             device=device,
             dedupe=dedupe,
             dedupe_normalise=dedupe_normalise,
+            chunk_transcripts=chunk_transcripts,
+            chunk_min_words=chunk_min_words,
+            chunk_max_words=chunk_max_words,
         )
         return
 
@@ -1115,11 +1284,46 @@ def run_workflow(
                     }
                 )
                 raise typer.Exit(1)
+            parse_data: Path | pd.DataFrame = input
+            chunking_report: dict[str, object] | None = None
+            parse_text_col = text_col
+            parse_id_col = id_col
+            parse_doc_col = doc_col
+            if chunk_transcripts:
+                source_rows = pd.read_csv(input)
+                chunk_df, chunk_map_df = _build_chunked_sentence_table(
+                    input_path=input,
+                    text_col=text_col,
+                    id_col=id_col,
+                    doc_col=doc_col,
+                    min_chunk_words=chunk_min_words,
+                    max_chunk_words=chunk_max_words,
+                )
+                if len(chunk_df) == 0:
+                    raise ValueError("No transcript chunks were produced from input.")
+                out.mkdir(parents=True, exist_ok=True)
+                chunk_df.to_csv(out / "transcript_chunks.csv", index=False)
+                chunk_map_df.to_csv(out / "transcript_chunk_mapping.csv", index=False)
+                parse_data = chunk_df
+                parse_text_col = "sentence"
+                parse_id_col = "sentence_id"
+                parse_doc_col = "doc_id"
+                chunking_report = {
+                    "enabled": True,
+                    "rows_in": int(len(source_rows)),
+                    "chunks_out": int(len(chunk_df)),
+                    "mapping_rows": int(len(chunk_map_df)),
+                    "chunk_min_words": chunk_min_words,
+                    "chunk_max_words": chunk_max_words,
+                    "chunk_table": str(out / "transcript_chunks.csv"),
+                    "chunk_mapping_table": str(out / "transcript_chunk_mapping.csv"),
+                }
+
             report = encode_with_fst(
-                data=input,
-                sentence_col=text_col,
-                sentence_id_col=id_col,
-                doc_col=doc_col,
+                data=parse_data,
+                sentence_col=parse_text_col,
+                sentence_id_col=parse_id_col,
+                doc_col=parse_doc_col,
                 out_dir=out,
                 resume=resume,
                 checkpoint_every=checkpoint_every,
@@ -1143,6 +1347,7 @@ def run_workflow(
                 "graph_ready": report.get("frame_elements", 0) > 0,
                 "canonical_run_dir": str(out),
                 "report": report,
+                "chunking": chunking_report,
                 "materialise_report": materialise_report,
                 "doctor": doctor_report,
                 "graph": graph_report,

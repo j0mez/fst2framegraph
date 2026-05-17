@@ -650,6 +650,49 @@ def test_run_on_raw_sentence_csv_uses_detect_path(
     assert report["unique_texts"] == 1
 
 
+def test_run_on_transcript_rows_auto_chunks_and_writes_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "ads.csv"
+    csv_path.write_text(
+        (
+            "ad_id,row_id,transcript\n"
+            "ad1,r1,Technology can reduce emissions. Companies report progress.\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "fst2framegraph.fst.export._make_default_fst",
+        lambda device: FakeFST(),
+    )
+
+    out_dir = tmp_path / "fst_clean"
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--input",
+            str(csv_path),
+            "--text-col",
+            "transcript",
+            "--id-col",
+            "row_id",
+            "--doc-col",
+            "ad_id",
+            "--out",
+            str(out_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    chunked = pd.read_csv(out_dir / "transcript_chunks.csv")
+    mapping = pd.read_csv(out_dir / "transcript_chunk_mapping.csv")
+    assert len(chunked) >= 2
+    assert {"sentence_id", "doc_id", "sentence"} <= set(chunked.columns)
+    assert len(mapping) == len(chunked)
+
+
 def test_run_on_flat_only_csv_exits_without_graph_ready_claim(tmp_path: Path) -> None:
     csv_path = tmp_path / "flat.csv"
     graph_ready_rows().drop(

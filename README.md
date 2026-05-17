@@ -133,6 +133,13 @@ fst2framegraph run \
   --framebase-index data/framebase/framebase_index.sqlite
 ```
 
+For transcript-per-row CSVs, `run` now chunks transcript text into sentence-like
+rows automatically before FST (`--chunk-transcripts` is enabled by default). It
+writes:
+
+- `transcript_chunks.csv` (chunked rows used for parsing)
+- `transcript_chunk_mapping.csv` (source-row to chunk provenance)
+
 Use `inspect` when you are unsure what a file or folder contains. The explicit commands
 `prepare`, `detect`, `materialise`, `doctor` and `build` remain available for debugging and
 reproducible advanced workflows.
