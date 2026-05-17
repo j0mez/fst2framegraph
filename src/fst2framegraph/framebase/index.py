@@ -9,11 +9,12 @@ from fst2framegraph.framebase.download import find_framebase_files, sha256_file
 from fst2framegraph.framebase.load_dbp_labels import load_dbp_labels
 from fst2framegraph.framebase.load_schema import FrameBaseSchema
 from fst2framegraph.framebase.parse_dered_rules import parse_dered_rules
+from fst2framegraph.framebase.parse_spin_rules import parse_spin_dereification_rules
 from fst2framegraph.schema import FrameBaseRule
 
 
 FRAMEBASE_INDEX_NAME = "framebase_index.sqlite"
-INDEX_SCHEMA_VERSION = "1"
+INDEX_SCHEMA_VERSION = "2"
 
 
 def default_framebase_index_path(framebase_dir: str | Path) -> Path:
@@ -58,6 +59,31 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             dbp_iri TEXT PRIMARY KEY,
             label TEXT
         );
+        CREATE TABLE IF NOT EXISTS dereification_rules (
+            rule_id TEXT PRIMARY KEY,
+            source_format TEXT,
+            source_file TEXT,
+            frame_iri TEXT,
+            frame_name TEXT,
+            microframe_name TEXT,
+            target_lemma_or_lu TEXT,
+            subject_fe_iri TEXT,
+            subject_fe_name TEXT,
+            object_fe_iri TEXT,
+            object_fe_name TEXT,
+            dbp_predicate_iri TEXT,
+            dbp_predicate_name TEXT,
+            raw_construct_node TEXT,
+            parse_status TEXT,
+            parse_warning TEXT,
+            raw_rule TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_rules_frame_iri ON dereification_rules(frame_iri);
+        CREATE INDEX IF NOT EXISTS idx_rules_frame_name ON dereification_rules(frame_name);
+        CREATE INDEX IF NOT EXISTS idx_rules_frame_name_target ON dereification_rules(frame_name, target_lemma_or_lu);
+        CREATE INDEX IF NOT EXISTS idx_rules_frame_fe_pair ON dereification_rules(frame_name, subject_fe_name, object_fe_name);
+        CREATE INDEX IF NOT EXISTS idx_rules_frame_target_fe_pair ON dereification_rules(frame_name, target_lemma_or_lu, subject_fe_name, object_fe_name);
+        CREATE INDEX IF NOT EXISTS idx_rules_fe_pair ON dereification_rules(subject_fe_name, object_fe_name);
         CREATE TABLE IF NOT EXISTS rules (
             rule_id TEXT PRIMARY KEY,
             frame_iri TEXT NOT NULL,
@@ -69,6 +95,21 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             dbp_iri TEXT NOT NULL,
             dbp_label TEXT,
             raw_rule TEXT
+        );
+        CREATE TABLE IF NOT EXISTS clusters (
+            parent_macroframe_iri TEXT,
+            parent_macroframe_name TEXT,
+            member_frame_iri TEXT,
+            member_frame_name TEXT
+        );
+        CREATE TABLE IF NOT EXISTS cluster_pairs (
+            source_frame TEXT,
+            target_frame TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lexical_clusters (
+            cluster_representant_iri TEXT,
+            member_frame_iri TEXT,
+            lexical_form TEXT
         );
         CREATE TABLE IF NOT EXISTS manifest (
             key TEXT PRIMARY KEY,
@@ -84,7 +125,18 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
 
 def _clear_schema(conn: sqlite3.Connection) -> None:
-    for table in ("metadata", "frames", "frame_elements", "dbp_labels", "rules", "manifest"):
+    for table in (
+        "metadata",
+        "frames",
+        "frame_elements",
+        "dbp_labels",
+        "dereification_rules",
+        "rules",
+        "clusters",
+        "cluster_pairs",
+        "lexical_clusters",
+        "manifest",
+    ):
         conn.execute(f"DELETE FROM {table}")
 
 
@@ -132,6 +184,74 @@ def _write_metadata(conn: sqlite3.Connection, metadata: dict[str, Any]) -> None:
         )
 
 
+def _frame_name_from_iri(frame_iri: str | None) -> str | None:
+    if not frame_iri:
+        return None
+    tail = frame_iri.rsplit("/frame/", 1)[-1] if "/frame/" in frame_iri else frame_iri
+    return tail.split(".", 1)[0] or None
+
+
+def _load_rules(
+    path: Path | None,
+    labels: dict[str, str],
+) -> tuple[list[FrameBaseRule], str | None]:
+    if path is None:
+        return [], None
+    lower_name = path.name.lower()
+    if "spin" in lower_name or lower_name.endswith(".ttl") or lower_name.endswith(".ttl.gz"):
+        return list(parse_spin_dereification_rules(path, labels)), "spin"
+    return parse_dered_rules(path, labels), "sparql"
+
+
+def _parse_clusters_txt(path: Path) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    current_parent_iri: str | None = None
+    current_parent_name: str | None = None
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("<parentMacroframe>") and line.endswith("</parentMacroframe>"):
+            iri = line.removeprefix("<parentMacroframe>").removesuffix("</parentMacroframe>")
+            current_parent_iri = iri
+            current_parent_name = _frame_name_from_iri(iri)
+            continue
+        if line.startswith("http://framebase.org/frame/") and current_parent_iri:
+            rows.append((current_parent_iri, current_parent_name or "", line, _frame_name_from_iri(line) or ""))
+    return rows
+
+
+def _parse_cluster_pairs(path: Path) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            rows.append((parts[0], parts[1]))
+    return rows
+
+
+def _parse_lexical_clusters(path: Path) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    current_representant: str | None = None
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("clusters.size()") or line.startswith("lexicalClusters.size()"):
+            continue
+        if line.startswith("### clusterRepresentant:"):
+            current_representant = line.split(":", 1)[1].strip()
+            continue
+        if current_representant is None:
+            continue
+        if line.startswith("http://framebase.org/frame/"):
+            rows.append((current_representant, line, ""))
+        else:
+            rows.append((current_representant, "", line))
+    return rows
+
+
 def build_framebase_index(
     *,
     framebase_dir: str | Path = Path("data") / "framebase",
@@ -141,11 +261,6 @@ def build_framebase_index(
     dbp_labels: str | Path | None = None,
     dered_rules: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Build a compact SQLite lookup index from FrameBase source files.
-
-    Dereification rules are optional: missing or unparsable rules never block
-    schema indexing.
-    """
     framebase_dir = Path(framebase_dir)
     index_path = Path(index_path) if index_path else default_framebase_index_path(framebase_dir)
 
@@ -159,7 +274,11 @@ def build_framebase_index(
     found = find_framebase_files(framebase_dir)
     core_path = Path(framebase_core) if framebase_core else found.get("core_schema")
     labels_path = Path(dbp_labels) if dbp_labels else found.get("dbp_labels")
-    rules_path = Path(dered_rules) if dered_rules else found.get("dereification_rules_sparql")
+    rules_path = (
+        Path(dered_rules)
+        if dered_rules
+        else found.get("dereification_rules_spin") or found.get("dereification_rules_sparql")
+    )
 
     if core_path is None:
         raise FileNotFoundError(
@@ -172,8 +291,7 @@ def build_framebase_index(
 
     conn = _connect(index_path)
     statuses: dict[str, tuple[str, str | None]] = {}
-    rules: list[FrameBaseRule] = []
-    labels: dict[str, str] = {}
+    warnings: list[str] = []
     try:
         _create_schema(conn)
         _clear_schema(conn)
@@ -181,10 +299,7 @@ def build_framebase_index(
         schema = FrameBaseSchema.from_turtle(core_path)
         for frame_name, frame_iri in schema.frame_lookup.items():
             conn.execute(
-                """
-                INSERT OR REPLACE INTO frames(frame_name, frame_iri, label)
-                VALUES (?, ?, ?)
-                """,
+                "INSERT OR REPLACE INTO frames(frame_name, frame_iri, label) VALUES (?, ?, ?)",
                 (frame_name, frame_iri, schema.labels.get(frame_iri)),
             )
         for (frame_name, fe_name), fe_iri in schema.fe_lookup.items():
@@ -199,6 +314,7 @@ def build_framebase_index(
             )
         statuses["core_schema"] = ("indexed", None)
 
+        labels: dict[str, str] = {}
         if labels_path is not None:
             labels = load_dbp_labels(labels_path)
             for dbp_iri, label in labels.items():
@@ -208,18 +324,53 @@ def build_framebase_index(
                 )
             statuses["dbp_labels"] = ("indexed", None)
         else:
-            statuses["dbp_labels"] = ("missing", "DBP labels unavailable; labels fall back to IRIs.")
+            warning = "DBP labels unavailable; labels fall back to IRIs."
+            statuses["dbp_labels"] = ("missing", warning)
+            warnings.append(warning)
 
-        if rules_path is not None:
-            try:
-                rules = parse_dered_rules(rules_path, labels)
-                if not rules:
-                    statuses["dereification_rules_sparql"] = (
-                        "unavailable",
-                        "Dereification rules unavailable; DBP dereified edges disabled: "
-                        "no parseable rules found.",
+        rules, rules_source_format = _load_rules(rules_path, labels)
+        parsed_rules = 0
+        parse_errors = 0
+        parse_warnings = 0
+        if rules_path is None:
+            warning = "Dereification rules unavailable; DBP dereified edges disabled."
+            statuses["dereification_rules_spin"] = ("missing", warning)
+            statuses["dereification_rules_sparql"] = ("missing", None)
+            warnings.append(warning)
+        else:
+            for rule in rules:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO dereification_rules(
+                        rule_id, source_format, source_file, frame_iri, frame_name, microframe_name,
+                        target_lemma_or_lu, subject_fe_iri, subject_fe_name, object_fe_iri,
+                        object_fe_name, dbp_predicate_iri, dbp_predicate_name, raw_construct_node,
+                        parse_status, parse_warning, raw_rule
                     )
-                for rule in rules:
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rule.rule_id,
+                        rule.source_format,
+                        rule.source_file,
+                        rule.frame_iri,
+                        rule.frame_name,
+                        rule.microframe_name,
+                        rule.target_lemma_or_lu,
+                        rule.subject_fe_iri,
+                        rule.subject_fe_name,
+                        rule.object_fe_iri,
+                        rule.object_fe_name,
+                        rule.dbp_predicate_iri,
+                        rule.dbp_predicate_name,
+                        rule.raw_construct_node,
+                        rule.parse_status,
+                        rule.parse_warning,
+                        rule.raw_rule,
+                    ),
+                )
+                if rule.parse_status == "parsed":
+                    parsed_rules += 1
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO rules(
@@ -236,29 +387,60 @@ def build_framebase_index(
                             rule.object_fe_iri,
                             rule.subject_fe_name,
                             rule.object_fe_name,
-                            rule.dbp_iri,
-                            rule.dbp_label,
+                            rule.dbp_predicate_iri,
+                            rule.dbp_label or rule.dbp_predicate_name,
                             rule.raw_rule,
                         ),
                     )
-                if rules:
-                    statuses["dereification_rules_sparql"] = ("indexed", None)
-            except Exception as exc:
-                statuses["dereification_rules_sparql"] = (
-                    "unavailable",
-                    f"Dereification rules unavailable; DBP dereified edges disabled: {exc}",
-                )
-                rules = []
-        else:
-            statuses["dereification_rules_sparql"] = (
-                "missing",
-                "Dereification rules unavailable; DBP dereified edges disabled.",
-            )
+                else:
+                    parse_errors += 1
+                if rule.parse_warning:
+                    parse_warnings += 1
+            manifest_key = "dereification_rules_spin" if rules_source_format == "spin" else "dereification_rules_sparql"
+            if parsed_rules:
+                statuses[manifest_key] = ("indexed", None)
+            else:
+                warning = "Dereification rules unavailable; DBP dereified edges disabled: no parseable rules found."
+                statuses[manifest_key] = ("unavailable", warning)
+                warnings.append(warning)
+            other_key = "dereification_rules_sparql" if manifest_key == "dereification_rules_spin" else "dereification_rules_spin"
+            statuses.setdefault(other_key, ("missing", None))
+
+        cluster_files_loaded = False
+        if found.get("clusters") and found["clusters"] is not None:
+            for row in _parse_clusters_txt(found["clusters"]):
+                conn.execute("INSERT INTO clusters VALUES (?, ?, ?, ?)", row)
+            statuses["clusters"] = ("indexed", None)
+            cluster_files_loaded = True
+        if found.get("cluster_pairs") and found["cluster_pairs"] is not None:
+            for row in _parse_cluster_pairs(found["cluster_pairs"]):
+                conn.execute("INSERT INTO cluster_pairs VALUES (?, ?)", row)
+            statuses["cluster_pairs"] = ("indexed", None)
+            cluster_files_loaded = True
+        if found.get("lexical_clusters") and found["lexical_clusters"] is not None:
+            for row in _parse_lexical_clusters(found["lexical_clusters"]):
+                conn.execute("INSERT INTO lexical_clusters VALUES (?, ?, ?)", row)
+            statuses["lexical_clusters"] = ("indexed", None)
+            cluster_files_loaded = True
+        for optional_key in (
+            "clusters",
+            "cluster_pairs",
+            "lexical_clusters",
+            "manual_schema_extensions",
+            "manual_inference_rules",
+        ):
+            statuses.setdefault(optional_key, ("missing", None))
 
         paths = {
             "core_schema": core_path,
             "dbp_labels": labels_path,
-            "dereification_rules_sparql": rules_path,
+            "dereification_rules_spin": found.get("dereification_rules_spin"),
+            "dereification_rules_sparql": found.get("dereification_rules_sparql"),
+            "clusters": found.get("clusters"),
+            "cluster_pairs": found.get("cluster_pairs"),
+            "lexical_clusters": found.get("lexical_clusters"),
+            "manual_schema_extensions": found.get("manual_schema_extensions"),
+            "manual_inference_rules": found.get("manual_inference_rules"),
         }
         _insert_manifest(conn, paths=paths, statuses=statuses)
 
@@ -268,7 +450,16 @@ def build_framebase_index(
             "frames": len(schema.frame_lookup),
             "frame_element_lookup_keys": len(schema.fe_lookup),
             "dbp_labels": len(labels),
-            "rules": len(rules),
+            "rules": parsed_rules,
+            "dereification_rules_loaded": parsed_rules,
+            "dereification_rules_source_format": rules_source_format,
+            "dereification_rules_source_file": str(rules_path) if rules_path else None,
+            "dereification_rules_sha256": sha256_file(rules_path) if rules_path and rules_path.exists() else None,
+            "dereification_rules_parse_errors": parse_errors,
+            "dereification_rules_parse_warnings": parse_warnings,
+            "cluster_files_loaded": cluster_files_loaded,
+            "dbp_schema_loaded": labels_path is not None,
+            "core_schema_loaded": core_path is not None,
         }
         _write_metadata(conn, metadata)
         conn.commit()
@@ -277,15 +468,14 @@ def build_framebase_index(
             "index_path": str(index_path),
             "reused": False,
             **metadata,
-            "warnings": [error for _, error in statuses.values() if error],
+            "warnings": warnings,
         }
     finally:
         conn.close()
 
 
 def load_schema_from_index(index_path: str | Path) -> FrameBaseSchema:
-    index_path = Path(index_path)
-    conn = _connect(index_path)
+    conn = _connect(Path(index_path))
     try:
         frame_lookup = {
             str(name): str(iri)
@@ -303,8 +493,7 @@ def load_schema_from_index(index_path: str | Path) -> FrameBaseSchema:
 
 
 def load_dbp_labels_from_index(index_path: str | Path) -> dict[str, str]:
-    index_path = Path(index_path)
-    conn = _connect(index_path)
+    conn = _connect(Path(index_path))
     try:
         return {
             str(iri): str(label)
@@ -315,31 +504,70 @@ def load_dbp_labels_from_index(index_path: str | Path) -> dict[str, str]:
 
 
 def load_rules_from_index(index_path: str | Path) -> list[FrameBaseRule]:
-    index_path = Path(index_path)
-    conn = _connect(index_path)
+    conn = _connect(Path(index_path))
     try:
-        rows = conn.execute(
-            """
-            SELECT rule_id, frame_iri, frame_name, subject_fe_iri, object_fe_iri,
-                   subject_fe_name, object_fe_name, dbp_iri, dbp_label, raw_rule
-            FROM rules
-            """
-        ).fetchall()
-        return [
-            FrameBaseRule(
-                rule_id=row[0],
-                frame_iri=row[1],
-                frame_name=row[2],
-                subject_fe_iri=row[3],
-                object_fe_iri=row[4],
-                subject_fe_name=row[5],
-                object_fe_name=row[6],
-                dbp_iri=row[7],
-                dbp_label=row[8],
-                raw_rule=row[9],
-            )
-            for row in rows
-        ]
+        try:
+            rows = conn.execute(
+                """
+                SELECT rule_id, source_format, source_file, frame_iri, frame_name, microframe_name,
+                       target_lemma_or_lu, subject_fe_iri, subject_fe_name, object_fe_iri,
+                       object_fe_name, dbp_predicate_iri, dbp_predicate_name, raw_construct_node,
+                       parse_status, parse_warning, raw_rule
+                FROM dereification_rules
+                WHERE COALESCE(parse_status, 'parsed') = 'parsed'
+                """
+            ).fetchall()
+            return [
+                FrameBaseRule(
+                    rule_id=row[0],
+                    source_format=row[1],
+                    source_file=row[2],
+                    frame_iri=row[3],
+                    frame_name=row[4],
+                    microframe_name=row[5],
+                    target_lemma_or_lu=row[6],
+                    subject_fe_iri=row[7],
+                    subject_fe_name=row[8],
+                    object_fe_iri=row[9],
+                    object_fe_name=row[10],
+                    dbp_predicate_iri=row[11],
+                    dbp_predicate_name=row[12],
+                    dbp_iri=row[11],
+                    dbp_label=row[12],
+                    raw_construct_node=row[13],
+                    parse_status=row[14],
+                    parse_warning=row[15],
+                    raw_rule=row[16],
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                """
+                SELECT rule_id, frame_iri, frame_name, subject_fe_iri, object_fe_iri,
+                       subject_fe_name, object_fe_name, dbp_iri, dbp_label, raw_rule
+                FROM rules
+                """
+            ).fetchall()
+            return [
+                FrameBaseRule(
+                    rule_id=row[0],
+                    source_format="sparql",
+                    frame_iri=row[1],
+                    frame_name=row[2],
+                    subject_fe_iri=row[3],
+                    object_fe_iri=row[4],
+                    subject_fe_name=row[5],
+                    object_fe_name=row[6],
+                    dbp_predicate_iri=row[7],
+                    dbp_predicate_name=row[8],
+                    dbp_iri=row[7],
+                    dbp_label=row[8],
+                    parse_status="parsed",
+                    raw_rule=row[9],
+                )
+                for row in rows
+            ]
     finally:
         conn.close()
 

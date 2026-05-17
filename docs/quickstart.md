@@ -29,50 +29,72 @@ Run the local no-network smoke path:
 bash scripts/smoke_test.sh
 ```
 
+## One-command quickstart
+
+`run` is the easiest entry point: it inspects the input, plans the workflow, then executes the safe
+next steps.
+
+```bash
+fst2framegraph run --input YOUR_FILE_OR_FOLDER --out fst_clean
+```
+
+When graph building is wanted and a FrameBase index is available:
+
+```bash
+fst2framegraph run \
+  --input YOUR_FILE_OR_FOLDER \
+  --out fst_clean \
+  --graph \
+  --framebase-index framebase_index.sqlite
+```
+
+Preview the workflow without writing files, loading pickles, running FST or building graphs:
+
+```bash
+fst2framegraph run --plan --input YOUR_FILE_OR_FOLDER --out fst_clean
+```
+
+Use `--interactive` for guided questions. Scripts, Colab and CI should use the default
+non-interactive mode.
+
 ## The smooth path
 
 What do you have?
 
 ```text
 Raw text / sentence CSV
-  -> fst2framegraph detect
-  -> fst2framegraph build
+  -> fst2framegraph run --input sentences.csv --text-col sentence --id-col sentence_id --doc-col doc_id --out fst_clean
 
 Existing FST output
-  -> fst2framegraph prepare
-  -> fst2framegraph build
+  -> fst2framegraph run --input old_fst_outputs --out fst_clean
 
 Weird folder / unknown files
-  -> fst2framegraph inspect
+  -> fst2framegraph inspect --input whatever
 
 Clean canonical run directory
-  -> fst2framegraph build --input fst_clean
+  -> fst2framegraph build --input fst_clean --out graph_output --framebase-index framebase_index.sqlite
 ```
 
 For existing FST outputs:
 
 ```bash
-fst2framegraph prepare --input old_fst_outputs --out fst_clean
-fst2framegraph build \
-  --input fst_clean \
-  --out graph_output \
+fst2framegraph run \
+  --input old_fst_outputs \
+  --out fst_clean \
+  --graph-out graph_output \
   --framebase-index data/framebase/framebase_index.sqlite
 ```
 
 For raw text:
 
 ```bash
-fst2framegraph detect \
+fst2framegraph run \
   --input sentences.csv \
   --text-col sentence \
   --id-col sentence_id \
   --doc-col doc_id \
   --out fst_clean \
-  --resume
-
-fst2framegraph build \
-  --input fst_clean \
-  --out graph_output \
+  --graph-out graph_output \
   --framebase-index data/framebase/framebase_index.sqlite
 ```
 
@@ -106,6 +128,12 @@ interrupted run with:
 ```bash
 fst2framegraph materialise --run-dir outputs/fst_clean
 ```
+
+Exact text dedupe is enabled before FST inference by default. It saves compute by parsing each
+identical sentence text once, then expanding the result back to every original `sentence_id`,
+`doc_id` and `row_index`. Use `--no-dedupe` or `dedupe=False` for one-row-one-FST-call behavior.
+`--dedupe-normalise normalised` only trims and collapses whitespace; fuzzy, embedding, semantic,
+lowercase, punctuation-stripping and Levenshtein dedupe are deliberately not included.
 
 `frame_elements_long.csv` is graph-ready when it includes instance identifiers plus target and
 filler spans: `sentence_id`, `sentence`, `frame_index`, `frame_name`, `target_text`,

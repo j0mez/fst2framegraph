@@ -489,6 +489,153 @@ def test_batch_size_falls_back_to_single_sentence_api(tmp_path: Path) -> None:
     assert fst.calls == ["Technology can reduce emissions.", "Policy can guide markets."]
 
 
+def test_dedupe_runs_identical_text_once_and_expands_outputs(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "doc_id": ["d1", "d2"],
+            "sentence": ["Technology can reduce emissions.", "Technology can reduce emissions."],
+        }
+    )
+    fst = FakeFST()
+
+    report = encode_with_fst(
+        fst=fst,
+        data=df,
+        sentence_id_col="sentence_id",
+        doc_col="doc_id",
+        out_dir=tmp_path / "run",
+        resume=False,
+    )
+
+    assert fst.calls == ["Technology can reduce emissions."]
+    assert report["input_rows"] == 2
+    assert report["unique_texts"] == 1
+    assert report["deduplicated_rows"] == 1
+    assert report["dedupe_savings_percent"] == 50.0
+    assert report["dedupe_enabled"] is True
+    assert report["dedupe_mode"] == "exact"
+    rows = pd.read_csv(tmp_path / "run" / "frame_elements_long.csv")
+    assert set(rows["sentence_id"]) == {"s1", "s2"}
+    assert set(rows["doc_id"]) == {"d1", "d2"}
+    assert not list((tmp_path / "run").rglob("*.pkl"))
+    assert not list((tmp_path / "run").rglob("*.pickle"))
+
+
+def test_no_dedupe_preserves_one_fst_call_per_row(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "sentence": ["Technology can reduce emissions.", "Technology can reduce emissions."],
+        }
+    )
+    fst = FakeFST()
+
+    report = encode_with_fst(
+        fst=fst,
+        data=df,
+        sentence_id_col="sentence_id",
+        out_dir=tmp_path / "run",
+        resume=False,
+        dedupe=False,
+    )
+
+    assert fst.calls == [
+        "Technology can reduce emissions.",
+        "Technology can reduce emissions.",
+    ]
+    assert report["input_rows"] == 2
+    assert report["unique_texts"] == 2
+    assert report["deduplicated_rows"] == 0
+    assert report["dedupe_enabled"] is False
+
+
+def test_dedupe_resume_reuses_completed_unique_text(tmp_path: Path) -> None:
+    first_df = pd.DataFrame(
+        {"sentence_id": ["s1"], "sentence": ["Technology can reduce emissions."]}
+    )
+    second_df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "sentence": ["Technology can reduce emissions.", "Technology can reduce emissions."],
+        }
+    )
+    run_dir = tmp_path / "run"
+    first_fst = FakeFST()
+    encode_with_fst(
+        fst=first_fst,
+        data=first_df,
+        sentence_id_col="sentence_id",
+        out_dir=run_dir,
+        resume=False,
+    )
+
+    second_fst = FakeFST()
+    report = encode_with_fst(
+        fst=second_fst,
+        data=second_df,
+        sentence_id_col="sentence_id",
+        out_dir=run_dir,
+        resume=True,
+    )
+
+    assert second_fst.calls == []
+    assert report["skipped_existing"] == 1
+    assert report["processed_this_run"] == 0
+    assert report["sentences"] == 2
+    rows = pd.read_csv(run_dir / "frame_elements_long.csv")
+    assert set(rows["sentence_id"]) == {"s1", "s2"}
+
+
+def test_normalised_dedupe_collapses_whitespace_variants(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "sentence": ["Technology can reduce emissions.", "  Technology   can reduce emissions.  "],
+        }
+    )
+    fst = FakeFST()
+
+    report = encode_with_fst(
+        fst=fst,
+        data=df,
+        sentence_id_col="sentence_id",
+        out_dir=tmp_path / "run",
+        resume=False,
+        dedupe_normalise="normalised",
+    )
+
+    assert fst.calls == ["Technology can reduce emissions."]
+    assert report["unique_texts"] == 1
+    rows = pd.read_csv(tmp_path / "run" / "frame_elements_long.csv")
+    assert set(rows["sentence_id"]) == {"s1", "s2"}
+
+
+def test_exact_dedupe_keeps_whitespace_variants_distinct(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "sentence": ["Technology can reduce emissions.", "  Technology   can reduce emissions.  "],
+        }
+    )
+    fst = FakeFST()
+
+    report = encode_with_fst(
+        fst=fst,
+        data=df,
+        sentence_id_col="sentence_id",
+        out_dir=tmp_path / "run",
+        resume=False,
+        dedupe_normalise="exact",
+    )
+
+    assert fst.calls == [
+        "Technology can reduce emissions.",
+        "  Technology   can reduce emissions.  ",
+    ]
+    assert report["unique_texts"] == 2
+
+
 def test_device_auto_does_not_require_torch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     real_import = builtins.__import__
 

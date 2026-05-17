@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import hashlib
 import inspect
 import json
@@ -19,6 +20,7 @@ import pandas as pd
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_\u2019'\-/]+")
+WHITESPACE_RE = re.compile(r"\s+")
 
 SENTENCE_FIELDS = ["sentence_id", "doc_id", "sentence_index", "row_index", "sentence"]
 FRAME_INSTANCE_FIELDS = [
@@ -145,6 +147,19 @@ def _read_data(data: Any, sentence_col: str) -> pd.DataFrame:
 def _stable_sentence_id(sentence: str, row_index: int) -> str:
     raw = f"{row_index}::{sentence}".encode("utf-8", errors="replace")
     return hashlib.sha1(raw).hexdigest()
+
+
+def _dedupe_text_key(sentence: str, mode: str) -> str:
+    if mode == "exact":
+        return sentence
+    if mode == "normalised":
+        return WHITESPACE_RE.sub(" ", sentence.strip())
+    raise ValueError("dedupe_normalise must be 'exact' or 'normalised'")
+
+
+def _stable_unique_text_id(text_key: str, mode: str) -> str:
+    raw = f"{mode}\0{text_key}".encode("utf-8", errors="replace")
+    return "ut_" + hashlib.sha1(raw).hexdigest()
 
 
 def _stable_frame_instance_id(
@@ -292,10 +307,11 @@ def _make_success_record(
     row_index: int | None,
     metadata: Mapping[str, Any] | None,
     allow_ambiguous_spans: bool,
+    extra_fields: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = dict(metadata or {})
     doc_id = doc_id or sentence_id
-    return {
+    record = {
         "sentence_id": sentence_id,
         "doc_id": doc_id,
         "row_index": row_index,
@@ -314,6 +330,9 @@ def _make_success_record(
         ),
         "result": _json_safe(_plain(result)),
     }
+    if extra_fields:
+        record.update(_json_safe(dict(extra_fields)))
+    return record
 
 
 def _make_error_record(
@@ -324,11 +343,12 @@ def _make_error_record(
     doc_id: str | None,
     row_index: int | None,
     metadata: Mapping[str, Any] | None,
+    extra_fields: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = dict(metadata or {})
     doc_id = doc_id or sentence_id
     error_text = repr(error)
-    return {
+    record = {
         "sentence_id": sentence_id,
         "doc_id": doc_id,
         "row_index": row_index,
@@ -341,6 +361,9 @@ def _make_error_record(
         "error": error_text,
         "error_message": error_text,
     }
+    if extra_fields:
+        record.update(_json_safe(dict(extra_fields)))
+    return record
 
 
 def _metadata_columns(records: Sequence[dict[str, Any]]) -> list[str]:
@@ -524,12 +547,37 @@ def materialise_run(run_dir: str | Path, *, write_csv: bool = True) -> dict[str,
         .to_dict()
         .items()
     }
+    dedupe_modes = [
+        str(record.get("dedupe_mode"))
+        for record in records
+        if record.get("dedupe_mode") is not None
+    ]
+    dedupe_mode = "none"
+    if dedupe_modes:
+        unique_modes = list(dict.fromkeys(dedupe_modes))
+        dedupe_mode = unique_modes[0] if len(unique_modes) == 1 else "mixed"
+    unique_text_ids = {
+        str(record.get("unique_text_id") or record.get("sentence_id"))
+        for record in records
+    }
+    input_rows = int(len(records))
+    unique_texts = int(len(unique_text_ids))
+    deduplicated_rows = max(0, input_rows - unique_texts)
+    dedupe_savings_percent = (
+        round((deduplicated_rows / input_rows) * 100, 1) if input_rows else 0.0
+    )
     report = {
         "sentences": int(len(sentence_rows)),
         "frame_instances": int(len(frame_rows)),
         "frame_elements": int(len(element_rows)),
         "errors": int(len(error_rows)),
         "jsonl_records": int(len(records)),
+        "input_rows": input_rows,
+        "unique_texts": unique_texts,
+        "deduplicated_rows": int(deduplicated_rows),
+        "dedupe_savings_percent": dedupe_savings_percent,
+        "dedupe_enabled": bool(any(record.get("dedupe_enabled") for record in records)),
+        "dedupe_mode": dedupe_mode,
         "duplicate_sentence_ids": int(duplicate_sentence_ids),
         "status_counts": status_counts,
         "span_status_counts": span_counts,
@@ -561,6 +609,8 @@ def materialise_run(run_dir: str | Path, *, write_csv: bool = True) -> dict[str,
         f"- Frame elements: {report['frame_elements']}",
         f"- Errors: {report['errors']}",
         f"- JSONL records: {report['jsonl_records']}",
+        f"- Unique texts: {report['unique_texts']}",
+        f"- Deduplicated rows: {report['deduplicated_rows']}",
         "",
         "## Span status counts",
         "",
@@ -736,6 +786,7 @@ class FSTGraphWriter:
         doc_id: str | None = None,
         sentence_index: int | None = None,
         metadata: Mapping[str, Any] | None = None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> None:
         record = _make_success_record(
             result=result,
@@ -745,6 +796,7 @@ class FSTGraphWriter:
             row_index=sentence_index,
             metadata=metadata,
             allow_ambiguous_spans=self.allow_ambiguous_spans,
+            extra_fields=extra_fields,
         )
         self.add_record(record)
 
@@ -757,6 +809,7 @@ class FSTGraphWriter:
         doc_id: str | None = None,
         sentence_index: int | None = None,
         metadata: Mapping[str, Any] | None = None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> None:
         record = _make_error_record(
             sentence=sentence,
@@ -765,6 +818,7 @@ class FSTGraphWriter:
             doc_id=doc_id,
             row_index=sentence_index,
             metadata=metadata,
+            extra_fields=extra_fields,
         )
         self.add_record(record)
 
@@ -911,7 +965,10 @@ def _make_default_fst(device: str | None) -> Any:
     except Exception as exc:
         raise ImportError(
             "frame-semantic-transformer is required when fst=None, "
-            "or pass an existing FST object."
+            "or pass an existing FST object. Install with "
+            "`pip install 'fst2framegraph[fst]'`; real FST inference is "
+            "recommended on Python 3.10/3.11 because the upstream dependency "
+            "stack is constrained on Python 3.12."
         ) from exc
 
     if device and _supports_keyword(FrameSemanticTransformer, "device"):
@@ -996,6 +1053,119 @@ def _check_unique_sentence_ids(payloads: Sequence[Mapping[str, Any]]) -> None:
         )
 
 
+def _annotate_dedupe_payloads(
+    payloads: Sequence[dict[str, Any]],
+    *,
+    dedupe: bool,
+    dedupe_normalise: str,
+) -> list[dict[str, Any]]:
+    if dedupe_normalise not in {"exact", "normalised"}:
+        raise ValueError("dedupe_normalise must be 'exact' or 'normalised'")
+    annotated = []
+    for payload in payloads:
+        payload = dict(payload)
+        original_sentence = str(payload["sentence"])
+        if dedupe:
+            text_key = _dedupe_text_key(original_sentence, dedupe_normalise)
+            unique_text_id = _stable_unique_text_id(text_key, dedupe_normalise)
+            sentence_for_fst = text_key if dedupe_normalise == "normalised" else original_sentence
+        else:
+            text_key = f"{payload['sentence_id']}\0{payload['row_index']}"
+            unique_text_id = str(payload["sentence_id"])
+            sentence_for_fst = original_sentence
+        payload["original_sentence"] = original_sentence
+        payload["sentence_for_fst"] = sentence_for_fst
+        payload["unique_text_id"] = unique_text_id
+        payload["dedupe_mode"] = dedupe_normalise
+        payload["dedupe_enabled"] = bool(dedupe)
+        payload["dedupe_text_hash"] = hashlib.sha1(
+            text_key.encode("utf-8", errors="replace")
+        ).hexdigest()
+        annotated.append(payload)
+    return annotated
+
+
+def _extra_fields_for_payload(
+    payload: Mapping[str, Any],
+    *,
+    representative_sentence_id: str,
+) -> dict[str, Any]:
+    return {
+        "unique_text_id": payload["unique_text_id"],
+        "dedupe_text_hash": payload["dedupe_text_hash"],
+        "dedupe_enabled": payload["dedupe_enabled"],
+        "dedupe_mode": payload["dedupe_mode"],
+        "dedupe_representative_sentence_id": representative_sentence_id,
+    }
+
+
+def _metadata_for_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = dict(payload.get("metadata") or {})
+    if payload.get("sentence_for_fst") != payload.get("original_sentence"):
+        metadata["original_sentence"] = payload.get("original_sentence")
+    return metadata
+
+
+def _completed_records_by_unique_text(
+    out_dir: str | Path,
+    *,
+    dedupe_normalise: str,
+) -> dict[str, dict[str, Any]]:
+    jsonl_path = Path(out_dir) / "fst_clean.jsonl"
+    records, _ = _read_jsonl_records(jsonl_path)
+    completed: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if record.get("status", "completed") not in {"completed", "ok"}:
+            continue
+        unique_text_id = record.get("unique_text_id")
+        if not unique_text_id:
+            sentence = str(record.get("sentence") or "")
+            unique_text_id = _stable_unique_text_id(
+                _dedupe_text_key(sentence, dedupe_normalise),
+                dedupe_normalise,
+            )
+        completed.setdefault(str(unique_text_id), record)
+    return completed
+
+
+def _clone_completed_record_for_payload(
+    record: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    representative_sentence_id: str,
+) -> dict[str, Any]:
+    cloned = copy.deepcopy(dict(record))
+    source_sentence_id = cloned.get("sentence_id")
+    sentence_id = str(payload["sentence_id"])
+    cloned.update(
+        {
+            "sentence_id": sentence_id,
+            "doc_id": payload.get("doc_id") or sentence_id,
+            "row_index": payload.get("row_index"),
+            "sentence_index": payload.get("row_index"),
+            "sentence": payload.get("sentence_for_fst"),
+            "metadata": _json_safe(_metadata_for_payload(payload)),
+            "processed_at": _utc_now(),
+            "dedupe_copied_from_sentence_id": source_sentence_id,
+            **_extra_fields_for_payload(
+                payload,
+                representative_sentence_id=representative_sentence_id,
+            ),
+        }
+    )
+    frames = cloned.get("frames") or []
+    if isinstance(frames, list):
+        for frame in frames:
+            if isinstance(frame, Mapping):
+                frame["frame_instance_id"] = _stable_frame_instance_id(
+                    sentence_id,
+                    int(frame.get("frame_index") or 0),
+                    str(frame.get("frame_name") or "UNKNOWN_FRAME"),
+                    _coerce_int(frame.get("target_start")),
+                )
+    return _json_safe(cloned)
+
+
 def encode_with_fst(
     *,
     fst: Any | None = None,
@@ -1022,6 +1192,8 @@ def encode_with_fst(
     batch_size: int = 16,
     device: str | None = "auto",
     retry_errors: bool = False,
+    dedupe: bool = True,
+    dedupe_normalise: str = "exact",
 ) -> dict[str, Any]:
     if resume and not save_jsonl:
         raise ValueError("resume=True requires save_jsonl=True")
@@ -1064,6 +1236,11 @@ def encode_with_fst(
         for row_index, (_, row) in enumerate(df.iloc[:n].iterrows())
     ]
     _check_unique_sentence_ids(payloads)
+    payloads = _annotate_dedupe_payloads(
+        payloads,
+        dedupe=dedupe,
+        dedupe_normalise=dedupe_normalise,
+    )
 
     writer = FSTGraphWriter(
         out_dir=out_dir,
@@ -1078,42 +1255,70 @@ def encode_with_fst(
     )
 
     completed = writer.completed_sentence_ids(retry_errors=retry_errors) if resume else set()
-    pending: list[dict[str, Any]] = []
+    completed_by_unique = (
+        _completed_records_by_unique_text(out_dir, dedupe_normalise=dedupe_normalise)
+        if resume and dedupe
+        else {}
+    )
+    pending_by_unique: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
     skipped = 0
+    reused_unique = 0
 
     for payload in payloads:
         if payload["sentence_id"] in completed:
             skipped += 1
             continue
-        pending.append(payload)
+        cached = completed_by_unique.get(str(payload["unique_text_id"]))
+        if cached is not None:
+            writer.add_record(
+                _clone_completed_record_for_payload(
+                    cached,
+                    payload,
+                    representative_sentence_id=str(cached.get("sentence_id")),
+                )
+            )
+            reused_unique += 1
+            continue
+        pending_by_unique.setdefault(str(payload["unique_text_id"]), []).append(payload)
+
+    pending_groups = list(pending_by_unique.values())
 
     processed = 0
     batch_size = max(1, int(batch_size or 1))
-    for start in range(0, len(pending), batch_size):
-        batch = pending[start : start + batch_size]
-        detections = _detect_batch(fst, [item["sentence"] for item in batch])
-        for payload, (ok, value) in zip(batch, detections):
-            if ok:
-                writer.add_result(
-                    result=value,
-                    sentence=payload["sentence"],
-                    sentence_id=payload["sentence_id"],
-                    doc_id=payload["doc_id"],
-                    sentence_index=payload["row_index"],
-                    metadata=payload["metadata"],
+    for start in range(0, len(pending_groups), batch_size):
+        batch_groups = pending_groups[start : start + batch_size]
+        representatives = [group[0] for group in batch_groups]
+        detections = _detect_batch(fst, [item["sentence_for_fst"] for item in representatives])
+        for group, representative, (ok, value) in zip(batch_groups, representatives, detections):
+            representative_sentence_id = str(representative["sentence_id"])
+            for payload in group:
+                extra_fields = _extra_fields_for_payload(
+                    payload,
+                    representative_sentence_id=representative_sentence_id,
                 )
-            else:
-                writer.add_error(
-                    sentence=payload["sentence"],
-                    sentence_id=payload["sentence_id"],
-                    doc_id=payload["doc_id"],
-                    sentence_index=payload["row_index"],
-                    metadata=payload["metadata"],
-                    error=value,
-                )
+                if ok:
+                    writer.add_result(
+                        result=value,
+                        sentence=payload["sentence_for_fst"],
+                        sentence_id=payload["sentence_id"],
+                        doc_id=payload["doc_id"],
+                        sentence_index=payload["row_index"],
+                        metadata=_metadata_for_payload(payload),
+                        extra_fields=extra_fields,
+                    )
+                else:
+                    writer.add_error(
+                        sentence=payload["sentence_for_fst"],
+                        sentence_id=payload["sentence_id"],
+                        doc_id=payload["doc_id"],
+                        sentence_index=payload["row_index"],
+                        metadata=_metadata_for_payload(payload),
+                        error=value,
+                        extra_fields=extra_fields,
+                    )
 
             processed += 1
-            done = processed + skipped
+            done = processed + skipped + reused_unique
             if progress_every and done % progress_every == 0:
                 print(f"Processed {done}/{n}", file=sys.stderr)
 
@@ -1125,6 +1330,9 @@ def encode_with_fst(
             "resume": bool(resume),
             "skipped_existing": int(skipped),
             "processed_this_run": int(processed),
+            "reused_unique_texts": int(reused_unique),
+            "dedupe_enabled": bool(dedupe),
+            "dedupe_mode": dedupe_normalise,
         }
     )
 

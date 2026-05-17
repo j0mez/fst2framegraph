@@ -17,6 +17,10 @@ venv/
 # local outputs
 outputs/
 *.log
+*.sqlite
+*.ttl
+*.ttl.gz
+*.zip
 
 # local FrameBase cache: keep docs, not full downloaded data
 /data/framebase/*
