@@ -11,6 +11,12 @@ drive.mount("/content/drive")
 Install with the optional FST stack:
 
 ```python
+import os
+os.environ["USE_TF"] = "0"
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["USE_FLAX"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+!pip install "protobuf>=3.20.1,<4.0.0"
 !pip install -r requirements-colab.txt
 !pip install -e .
 ```

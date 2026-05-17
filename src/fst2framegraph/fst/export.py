@@ -5,6 +5,7 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -960,15 +961,27 @@ def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
 
 
 def _make_default_fst(device: str | None) -> Any:
+    # Colab/runtime hardening: avoid optional TF/Flax import paths that often
+    # break FST environments when users only need Torch-backed inference.
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+    os.environ.setdefault("USE_FLAX", "0")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     try:
         from frame_semantic_transformer import FrameSemanticTransformer
     except Exception as exc:
         raise ImportError(
             "frame-semantic-transformer is required when fst=None, "
             "or pass an existing FST object. Install with "
-            "`pip install 'fst2framegraph[fst]'`; real FST inference is "
-            "recommended on Python 3.10/3.11 because the upstream dependency "
-            "stack is constrained on Python 3.12."
+            "`pip install 'fst2framegraph[fst]'`. "
+            "Colab users should run: "
+            "`import os; os.environ['USE_TF']='0'; "
+            "os.environ['TRANSFORMERS_NO_TF']='1'; "
+            "os.environ['USE_FLAX']='0'; "
+            "os.environ['TOKENIZERS_PARALLELISM']='false'` and then install "
+            "`protobuf>=3.20.1,<4.0.0` plus `frame-semantic-transformer==0.10.0`. "
+            "Real FST inference is recommended on Python 3.10/3.11 because "
+            "the upstream dependency stack is constrained on Python 3.12."
         ) from exc
 
     if device and _supports_keyword(FrameSemanticTransformer, "device"):
