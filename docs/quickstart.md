@@ -29,6 +29,57 @@ Run the local no-network smoke path:
 bash scripts/smoke_test.sh
 ```
 
+## The smooth path
+
+What do you have?
+
+```text
+Raw text / sentence CSV
+  -> fst2framegraph detect
+  -> fst2framegraph build
+
+Existing FST output
+  -> fst2framegraph prepare
+  -> fst2framegraph build
+
+Weird folder / unknown files
+  -> fst2framegraph inspect
+
+Clean canonical run directory
+  -> fst2framegraph build --input fst_clean
+```
+
+For existing FST outputs:
+
+```bash
+fst2framegraph prepare --input old_fst_outputs --out fst_clean
+fst2framegraph build \
+  --input fst_clean \
+  --out graph_output \
+  --framebase-index data/framebase/framebase_index.sqlite
+```
+
+For raw text:
+
+```bash
+fst2framegraph detect \
+  --input sentences.csv \
+  --text-col sentence \
+  --id-col sentence_id \
+  --doc-col doc_id \
+  --out fst_clean \
+  --resume
+
+fst2framegraph build \
+  --input fst_clean \
+  --out graph_output \
+  --framebase-index data/framebase/framebase_index.sqlite
+```
+
+Core graph building, inspection, preparation, materialisation, and FrameBase indexing work on
+Python 3.10-3.12. Real Frame Semantic Transformer inference is recommended on Python 3.10/3.11
+because the upstream FST dependency stack is constrained on Python 3.12.
+
 ## Reliable FST run
 
 For long FST runs, write to a run directory and resume from checkpoints:
@@ -55,3 +106,17 @@ interrupted run with:
 ```bash
 fst2framegraph materialise --run-dir outputs/fst_clean
 ```
+
+`frame_elements_long.csv` is graph-ready when it includes instance identifiers plus target and
+filler spans: `sentence_id`, `sentence`, `frame_index`, `frame_name`, `target_text`,
+`target_start`, `target_end`, `element_name`, `element_filler`, `filler_start`, and `filler_end`.
+Flat-only exports can support simple counts, but reliable nested graphs require `frame_index` and
+target/filler spans.
+
+Pickles are unsafe by default because Python pickles can execute code. `prepare` and `convert` only
+load trusted pickle files when `--allow-pickle` is passed, and they write portable JSONL/CSV
+outputs rather than new pickle files.
+
+FrameBase data is external and not bundled in this repository. Download or register the FrameBase
+files separately, then build `data/framebase/framebase_index.sqlite` with
+`fst2framegraph setup-framebase --out data/framebase --build-index`.

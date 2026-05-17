@@ -40,6 +40,56 @@ Python 3.10-3.12.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 
+## The smooth path
+
+What do you have?
+
+```text
+Raw text / sentence CSV
+  -> fst2framegraph detect
+  -> fst2framegraph build
+
+Existing FST output
+  -> fst2framegraph prepare
+  -> fst2framegraph build
+
+Weird folder / unknown files
+  -> fst2framegraph inspect
+
+Clean canonical run directory
+  -> fst2framegraph build --input fst_clean
+```
+
+For existing FST-like outputs:
+
+```bash
+fst2framegraph prepare --input old_fst_outputs --out fst_clean
+fst2framegraph build \
+  --input fst_clean \
+  --out graph_output \
+  --framebase-index data/framebase/framebase_index.sqlite
+```
+
+For raw text or a sentence CSV:
+
+```bash
+fst2framegraph detect \
+  --input sentences.csv \
+  --text-col sentence \
+  --id-col sentence_id \
+  --doc-col doc_id \
+  --out fst_clean \
+  --resume
+
+fst2framegraph build \
+  --input fst_clean \
+  --out graph_output \
+  --framebase-index data/framebase/framebase_index.sqlite
+```
+
+Use `inspect` when you are unsure what a file or folder contains. Use `prepare` when you already
+have FST-like outputs and want a canonical run directory for graph building.
+
 ## Set up FrameBase files
 
 The full FrameBase files are external data. They are not committed to this repository by default.
@@ -115,6 +165,18 @@ CSV files are materialised convenience outputs and can be rebuilt at any time:
 fst2framegraph materialise --run-dir outputs/fst_clean
 ```
 
+CLI example:
+
+```bash
+fst2framegraph detect \
+  --input sentences.csv \
+  --text-col sentence \
+  --id-col sentence_id \
+  --doc-col doc_id \
+  --out outputs/fst_clean \
+  --resume
+```
+
 Python example:
 
 ```python
@@ -151,7 +213,19 @@ without creating pickle files.
 
 ## Workflow B: build from existing clean FST output
 
-If you already have a clean `frame_elements_long.csv`, build the graph directly:
+If you already have a clean canonical run directory, build the graph directly:
+
+```bash
+fst2framegraph build \
+  --input fst_clean \
+  --out graph \
+  --framebase-index data/framebase/framebase_index.sqlite
+```
+
+`build --input fst_clean` uses `fst_clean/frame_elements_long.csv` when present. If the CSV is
+missing but `fst_clean.jsonl` exists, the command rebuilds the CSVs before graph construction.
+
+If you only have a clean `frame_elements_long.csv`, that still works:
 
 ```bash
 fst2framegraph build \
@@ -181,13 +255,15 @@ If you have older or messy FST outputs, inspect them first:
 ```bash
 fst2framegraph inspect --input examples/flat_only_old_fst.csv
 fst2framegraph inspect --input examples/fst_like.jsonl
-fst2framegraph convert --input examples/fst_like.jsonl --out fst_clean
+fst2framegraph prepare --input examples/fst_like.jsonl --out fst_clean
 ```
 
-Pickle conversion is disabled by default because Python pickles can execute code:
+`prepare` refuses flat-only CSVs as graph input because they lack the `frame_index` and
+target/filler span columns needed for reliable nested graphs. It also refuses pickle files by
+default because Python pickles can execute code:
 
 ```bash
-fst2framegraph convert --input trusted_pickles --out fst_clean --allow-pickle
+fst2framegraph prepare --input trusted_pickles --out fst_clean --allow-pickle
 ```
 
 Use `doctor` before long graph builds:

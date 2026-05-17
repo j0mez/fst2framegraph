@@ -58,8 +58,12 @@ def write_clean_input(path: Path) -> None:
             "frame_name": ["Capability", "Capability"],
             "frame_index": [0, 0],
             "target_text": ["can", "can"],
+            "target_start": [11, 11],
+            "target_end": [14, 14],
             "element_name": ["Entity", "Event"],
             "element_filler": ["Technology", "reduce emissions"],
+            "filler_start": [0, 15],
+            "filler_end": [10, 31],
         }
     ).to_csv(path, index=False)
 
@@ -152,6 +156,82 @@ def test_build_uses_framebase_index(tmp_path: Path) -> None:
         "warnings",
     ]:
         assert key in summary
+
+
+def test_build_accepts_canonical_run_directory(tmp_path: Path) -> None:
+    framebase_dir = tmp_path / "framebase"
+    write_tiny_framebase(framebase_dir, with_rules=True)
+    index_report = build_framebase_index(framebase_dir=framebase_dir, overwrite=True)
+
+    input_csv = tmp_path / "input.csv"
+    write_clean_input(input_csv)
+    clean_dir = tmp_path / "fst_clean"
+    convert_result = CliRunner().invoke(
+        app,
+        ["prepare", "--input", str(input_csv), "--out", str(clean_dir)],
+    )
+
+    build_result = CliRunner().invoke(
+        app,
+        [
+            "build",
+            "--input",
+            str(clean_dir),
+            "--out",
+            str(tmp_path / "out"),
+            "--framebase-index",
+            index_report["index_path"],
+            "--no-rdf",
+        ],
+    )
+
+    assert convert_result.exit_code == 0, convert_result.output
+    assert build_result.exit_code == 0, build_result.output
+    assert (tmp_path / "out" / "summary.json").exists()
+
+
+def test_build_materialises_run_directory_when_csv_missing(tmp_path: Path) -> None:
+    input_csv = tmp_path / "input.csv"
+    write_clean_input(input_csv)
+    clean_dir = tmp_path / "fst_clean"
+    prepare_result = CliRunner().invoke(
+        app,
+        ["prepare", "--input", str(input_csv), "--out", str(clean_dir)],
+    )
+    (clean_dir / "frame_elements_long.csv").unlink()
+
+    build_result = CliRunner().invoke(
+        app,
+        [
+            "build",
+            "--input",
+            str(clean_dir),
+            "--out",
+            str(tmp_path / "out"),
+            "--framebase-dir",
+            str(tmp_path / "empty-framebase"),
+            "--no-rdf",
+        ],
+    )
+
+    assert prepare_result.exit_code == 0, prepare_result.output
+    assert build_result.exit_code == 0, build_result.output
+    assert (clean_dir / "frame_elements_long.csv").exists()
+    assert (tmp_path / "out" / "summary.json").exists()
+
+
+def test_build_errors_for_unusable_input_directory(tmp_path: Path) -> None:
+    unusable = tmp_path / "not_a_run"
+    unusable.mkdir()
+
+    result = CliRunner().invoke(
+        app,
+        ["build", "--input", str(unusable), "--out", str(tmp_path / "out")],
+    )
+
+    assert result.exit_code != 0
+    assert "does not contain frame_elements_long.csv or fst_clean.jsonl" in result.output
+    assert "fst2framegraph inspect --input" in result.output
 
 
 def test_index_and_raw_ttl_validation_match(tmp_path: Path) -> None:

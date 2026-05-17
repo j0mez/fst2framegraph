@@ -22,7 +22,7 @@ from fst2framegraph.framebase.load_dbp_labels import load_dbp_labels
 from fst2framegraph.framebase.load_schema import FrameBaseSchema
 from fst2framegraph.framebase.parse_dered_rules import parse_dered_rules
 from fst2framegraph.framebase.rule_index import RuleIndex
-from fst2framegraph.fst import materialise_run
+from fst2framegraph.fst import encode_with_fst, materialise_run
 from fst2framegraph.graph.build_dereified import build_dereified_edges
 from fst2framegraph.graph.build_nested import build_nested_edges
 from fst2framegraph.graph.build_reified import build_reified_tables
@@ -42,6 +42,19 @@ from fst2framegraph.schema import ColumnMap
 
 app = typer.Typer(help="Convert FrameNet-style parser output into FrameBase-compatible graphs.")
 console = Console()
+
+CANONICAL_RUN_FILES = [
+    "fst_clean.jsonl",
+    "progress.sqlite",
+    "sentences.csv",
+    "frame_instances.csv",
+    "frame_elements.csv",
+    "frame_elements_long.csv",
+    "errors.csv",
+    "extraction_report.json",
+    "extraction_report.md",
+    "manifest.json",
+]
 
 
 def _resolve_framebase_paths(
@@ -71,6 +84,54 @@ def _resolve_framebase_index(
     if framebase_index is not None:
         return framebase_index
     return find_framebase_index(framebase_dir)
+
+
+def _resolve_build_input(input_path: Path) -> Path:
+    if input_path.is_dir():
+        csv_path = input_path / "frame_elements_long.csv"
+        if csv_path.exists():
+            return csv_path
+        if (input_path / "fst_clean.jsonl").exists():
+            materialise_run(input_path)
+            if csv_path.exists():
+                return csv_path
+        raise ValueError(
+            "Input directory does not contain frame_elements_long.csv or fst_clean.jsonl. "
+            f"Try `fst2framegraph inspect --input {input_path}`."
+        )
+    return input_path
+
+
+def _clear_canonical_outputs(out: Path) -> None:
+    for name in CANONICAL_RUN_FILES:
+        path = out / name
+        if path.exists() and path.is_file():
+            path.unlink()
+
+
+def _files_written(out: Path) -> list[str]:
+    return [str(out / name) for name in CANONICAL_RUN_FILES if (out / name).exists()]
+
+
+def _prepare_build_command(out: Path) -> str:
+    return (
+        "fst2framegraph build "
+        f"--input {out} "
+        "--out graph_output "
+        "--framebase-index PATH/framebase_index.sqlite"
+    )
+
+
+def _detect_next_command() -> str:
+    return (
+        "fst2framegraph detect "
+        "--input sentences.csv "
+        "--text-col sentence "
+        "--id-col sentence_id "
+        "--doc-col doc_id "
+        "--out fst_clean "
+        "--resume"
+    )
 
 
 @app.command("setup-framebase")
@@ -143,7 +204,11 @@ def build_framebase_index_command(
 
 @app.command()
 def build(
-    input: Path = typer.Option(..., "--input", help="FrameNet/FST-style long CSV."),
+    input: Path = typer.Option(
+        ...,
+        "--input",
+        help="CSV file or canonical run directory.",
+    ),
     out: Path = typer.Option(..., "--out", help="Output directory."),
     framebase_dir: Optional[Path] = typer.Option(
         None,
@@ -182,7 +247,12 @@ def build(
     no_rdf: bool = typer.Option(False, help="Do not write Turtle/RDF output."),
     no_graphml: bool = typer.Option(False, help="Do not write GraphML output."),
 ) -> None:
-    require_file(input, "input")
+    try:
+        input_csv = _resolve_build_input(input)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    require_file(input_csv, "input")
     index_path = _resolve_framebase_index(framebase_dir, framebase_index)
     if framebase_index is None and any([framebase_core, dbp_labels, dered_rules]):
         index_path = None
@@ -207,8 +277,8 @@ def build(
         require_file(rules_path, "dereification rules")
     ensure_out_dir(out)
 
-    console.print(f"[bold]Reading[/bold] {input}")
-    raw_df, detected = read_fst_csv(input)
+    console.print(f"[bold]Reading[/bold] {input_csv}")
+    raw_df, detected = read_fst_csv(input_csv)
     if any([doc_col, sentence_col, frame_col, fe_col, filler_col]):
         if not all([doc_col, sentence_col, frame_col, fe_col, filler_col]):
             raise typer.BadParameter("If setting explicit required columns, provide all five: doc, sentence, frame, FE, filler.")
@@ -314,6 +384,7 @@ def build(
     write_json(
         {
             "input": str(input),
+            "resolved_input": str(input_csv),
             **fb_paths,
             "columns": cmap.model_dump(),
             "rule_count": len(rules),
@@ -333,12 +404,64 @@ def build(
 
 
 @app.command()
-def detect(input: Path = typer.Option(..., "--input", help="CSV to inspect.")) -> None:
+def detect(
+    input: Path = typer.Option(..., "--input", help="Raw sentence CSV to run through FST."),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Canonical fst_clean output directory. If omitted, only column detection is reported.",
+    ),
+    text_col: str = typer.Option("sentence", "--text-col", help="Sentence text column."),
+    id_col: Optional[str] = typer.Option(None, "--id-col", help="Optional sentence ID column."),
+    doc_col: Optional[str] = typer.Option(None, "--doc-col", help="Optional document ID column."),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume existing run state."),
+    batch_size: int = typer.Option(16, "--batch-size", help="FST batch size."),
+    checkpoint_every: int = typer.Option(100, "--checkpoint-every", help="Checkpoint interval."),
+) -> None:
+    """Run FrameSemanticTransformer over a raw sentence CSV and write a canonical run."""
     import pandas as pd
 
-    df = pd.read_csv(input, nrows=50)
-    cmap = detect_columns(df)
-    console.print(cmap.model_dump_json(indent=2))
+    if out is None:
+        df = pd.read_csv(input, nrows=50)
+        cmap = detect_columns(df)
+        console.print_json(
+            data={
+                "detected_columns": cmap.model_dump(),
+                "next_command": (
+                    "fst2framegraph detect "
+                    f"--input {input} "
+                    f"--text-col {text_col} "
+                    "--id-col sentence_id "
+                    "--doc-col doc_id "
+                    "--out fst_clean "
+                    "--resume"
+                ),
+            }
+        )
+        return
+
+    try:
+        report = encode_with_fst(
+            data=input,
+            sentence_col=text_col,
+            sentence_id_col=id_col,
+            doc_col=doc_col,
+            out_dir=out,
+            resume=resume,
+            batch_size=batch_size,
+            checkpoint_every=checkpoint_every,
+        )
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print_json(
+        data={
+            "message": f"Detected frames into canonical run directory: {out}",
+            "graph_ready": report.get("frame_elements", 0) > 0,
+            "report": report,
+            "next_command": _prepare_build_command(out),
+        }
+    )
 
 
 @app.command("inspect")
@@ -378,6 +501,120 @@ def convert_outputs(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     console.print_json(data=report)
+
+
+@app.command("prepare")
+def prepare_outputs(
+    input: Path = typer.Option(..., "--input", help="Existing FST output file or directory."),
+    out: Path = typer.Option(..., "--out", help="Canonical fst_clean output directory."),
+    allow_pickle: bool = typer.Option(
+        False,
+        "--allow-pickle",
+        help="Allow loading trusted Python pickle files. Pickles can execute code.",
+    ),
+    recursive: bool = typer.Option(True, "--recursive/--no-recursive", help="Scan directories recursively."),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite known canonical files already present in --out.",
+    ),
+) -> None:
+    """Prepare existing FST-like output for graph building."""
+    try:
+        inspection = inspect_fst_outputs(input, recursive=recursive)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    detected = inspection["detected_format"]
+    status = inspection["status"]
+
+    if inspection.get("flat_only"):
+        console.print_json(
+            data={
+                "message": (
+                    "Input is flat-only. Flat counts may be possible, but reliable nested graphs "
+                    "require frame_index and target/filler spans."
+                ),
+                "detected_format": detected,
+                "status": status,
+                "graph_ready": False,
+                "warnings": inspection.get("warnings", []),
+                "missing_required_columns": inspection.get("missing_required_columns", []),
+                "next_command": _detect_next_command(),
+            }
+        )
+        raise typer.Exit(1)
+
+    if status == "unsafe_without_pickle_permission" and not allow_pickle:
+        console.print_json(
+            data={
+                "message": (
+                    "Python pickles can execute code. Prepare will only load trusted pickles "
+                    "when --allow-pickle is passed."
+                ),
+                "detected_format": detected,
+                "status": status,
+                "graph_ready": False,
+                "pickle_files": inspection.get("pickle_files", []),
+                "next_command": (
+                    "fst2framegraph prepare "
+                    f"--input {input} "
+                    f"--out {out} "
+                    "--allow-pickle"
+                ),
+            }
+        )
+        raise typer.Exit(1)
+
+    if not inspection.get("convertible") and not (
+        allow_pickle and detected in {"pickle_file", "pickle_folder"}
+    ):
+        console.print_json(
+            data={
+                "message": f"Input is not preparable ({status}).",
+                "detected_format": detected,
+                "status": status,
+                "graph_ready": False,
+                "missing_required_columns": inspection.get("missing_required_columns", []),
+                "next_command": f"fst2framegraph inspect --input {input}",
+            }
+        )
+        raise typer.Exit(1)
+
+    if overwrite:
+        _clear_canonical_outputs(out)
+
+    try:
+        convert_report = convert_fst_outputs(
+            input,
+            out,
+            allow_pickle=allow_pickle,
+            recursive=recursive,
+        )
+        materialise_report = materialise_run(out)
+        doctor_report = doctor_run(run_dir=out)
+        prepared_report = inspect_fst_outputs(out)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    graph_ready = bool(prepared_report.get("graph_ready"))
+    console.print_json(
+        data={
+            "message": f"Prepared canonical run directory: {out}",
+            "detected_format": detected,
+            "status": prepared_report.get("status"),
+            "graph_ready": graph_ready,
+            "files_written": _files_written(out),
+            "conversion_report": convert_report,
+            "materialise_report": materialise_report,
+            "doctor": doctor_report,
+            "next_command": _prepare_build_command(out),
+        }
+    )
+    if not graph_ready:
+        raise typer.Exit(1)
 
 
 @app.command("framebase-status")
