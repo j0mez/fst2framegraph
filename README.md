@@ -189,6 +189,24 @@ emitted when the current FrameBase 2.0 SPIN dereification rules match safely.
 - SPIN dereification rules provide the actual mapping from frame plus FE pair to DBP predicate.
 - Ambiguous matches are reported in `dereification_diagnostics.csv`, not guessed silently.
 
+Tiny local fixtures in tests and smoke scripts prove the mechanics; they do not promise that the
+same toy frames are covered by current real FrameBase. For example, the common toy
+`Capability / Entity=Technology / Event=reduce emissions / target=can` remains ambiguous/unmatched
+against the current real FrameBase index because there is no unique `Capability.can.verb`
+Entity/Event rule.
+
+A small real-index positive probe is:
+
+```csv
+doc_id,sentence_id,sentence,frame_name,frame_index,target_text,target_start,target_end,element_name,element_filler,filler_start,filler_end
+doc-real,s-real,Companies use renewable power to reduce emissions.,Using,0,use,10,13,Agent,Companies,0,9
+doc-real,s-real,Companies use renewable power to reduce emissions.,Using,0,use,10,13,Purpose,reduce emissions,33,49
+```
+
+With a current full FrameBase 2.0 index, this resolves through the unique
+`Using / target=use / Agent -> Purpose` rule and emits one
+`official_framebase_reder_edge` with DBP predicate `Using.usesForPurpose`.
+
 ## Workflow A: run FST over raw text
 
 Long FST runs should write to one run directory. The canonical state is:

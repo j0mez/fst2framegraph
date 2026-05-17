@@ -1212,12 +1212,14 @@ def framebase_status(
     target_text: Optional[str] = typer.Option(None, "--target-text", help="Optional target text for rule-candidate inspection."),
     limit: int = typer.Option(20, "--limit", help="Maximum candidate rules to print for inspection."),
 ) -> None:
+    inspect_requested = any(value is not None for value in [frame_name, subject_fe, object_fe])
     found = find_framebase_files(framebase_dir)
-    console.print_json(data={k: str(v) if v else None for k, v in found.items()})
+    if write_manifest or not inspect_requested:
+        console.print_json(data={k: str(v) if v else None for k, v in found.items()})
     if write_manifest:
         manifest = write_framebase_manifest(framebase_dir)
         console.print_json(data=manifest)
-    if any(value is not None for value in [frame_name, subject_fe, object_fe]):
+    if inspect_requested:
         if not all([frame_name, subject_fe, object_fe]):
             console.print("[red]Provide --frame-name, --subject-fe, and --object-fe together.[/red]")
             raise typer.Exit(1)
