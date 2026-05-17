@@ -394,6 +394,15 @@ Use Colab's mounted filesystem rather than Google Drive API auth:
 from google.colab import drive
 drive.mount("/content/drive")
 
+import os
+os.environ["USE_TF"] = "0"
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["USE_FLAX"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+!pip install "protobuf>=3.20.1,<4.0.0"
+!pip install -r requirements-colab.txt
+!pip install -e .
+
 from frame_semantic_transformer import FrameSemanticTransformer
 from fst2framegraph import encode_with_fst, setup_framebase
 
