@@ -190,6 +190,36 @@ def test_build_accepts_canonical_run_directory(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "summary.json").exists()
 
 
+def test_run_with_graph_options_builds_graph(tmp_path: Path) -> None:
+    framebase_dir = tmp_path / "framebase"
+    write_tiny_framebase(framebase_dir, with_rules=True)
+    index_report = build_framebase_index(framebase_dir=framebase_dir, overwrite=True)
+    input_csv = tmp_path / "input.csv"
+    write_clean_input(input_csv)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--input",
+            str(input_csv),
+            "--out",
+            str(tmp_path / "fst_clean"),
+            "--graph-out",
+            str(tmp_path / "graph_output"),
+            "--framebase-index",
+            index_report["index_path"],
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "fst_clean" / "frame_elements_long.csv").exists()
+    assert (tmp_path / "graph_output" / "summary.json").exists()
+    summary = json.loads((tmp_path / "graph_output" / "summary.json").read_text())
+    assert "nested_edges" in summary
+
+
 def test_build_materialises_run_directory_when_csv_missing(tmp_path: Path) -> None:
     input_csv = tmp_path / "input.csv"
     write_clean_input(input_csv)

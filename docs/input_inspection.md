@@ -39,6 +39,12 @@ If those columns are present, you can build directly:
 fst2framegraph build --input frame_elements_long.csv --out graph
 ```
 
+Or use the one-command path:
+
+```bash
+fst2framegraph run --input frame_elements_long.csv --out fst_clean --graph --framebase-index data/framebase/framebase_index.sqlite
+```
+
 ## Flat-only data
 
 Older flattened CSVs often have `frame_name`, `element_name`, and `element_filler`, but lack frame

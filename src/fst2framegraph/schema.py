@@ -52,14 +52,23 @@ class BuildConfig(BaseModel):
 
 class FrameBaseRule(BaseModel):
     rule_id: str
+    source_format: str | None = None
+    source_file: str | None = None
     frame_iri: str
     frame_name: str | None = None
+    microframe_name: str | None = None
+    target_lemma_or_lu: str | None = None
     subject_fe_iri: str
     object_fe_iri: str
     subject_fe_name: str | None = None
     object_fe_name: str | None = None
-    dbp_iri: str
+    dbp_predicate_iri: str
+    dbp_predicate_name: str | None = None
+    dbp_iri: str | None = None
     dbp_label: str | None = None
+    raw_construct_node: str | None = None
+    parse_status: str | None = None
+    parse_warning: str | None = None
     raw_rule: str | None = None
 
 

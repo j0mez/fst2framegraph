@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use fst2framegraph, please cite this software and the upstream resources that enabled your analysis."
 title: "fst2framegraph: Resumable Frame Semantic Transformer outputs and FrameBase-compatible nested graphs"
-version: "0.3.2"
+version: "0.4.0-alpha"
 date-released: "2026-05-17"
 authors:
   - name: "fst2framegraph contributors"

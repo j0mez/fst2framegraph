@@ -441,6 +441,226 @@ def test_prepare_output_can_be_passed_to_build(tmp_path: Path) -> None:
     assert (tmp_path / "graph" / "summary.json").exists()
 
 
+def test_run_plan_on_graph_ready_csv_writes_no_files(tmp_path: Path) -> None:
+    csv_path = tmp_path / "frame_elements_long.csv"
+    out_dir = tmp_path / "fst_clean"
+    graph_ready_rows().to_csv(csv_path, index=False)
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--plan", "--input", str(csv_path), "--out", str(out_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Detected: graph-ready CSV" in result.output
+    assert "convert input to canonical run directory" in result.output
+    assert "materialise CSV/report outputs" in result.output
+    assert "run doctor checks" in result.output
+    assert "To execute:" in result.output
+    assert not out_dir.exists()
+
+
+def test_run_on_canonical_run_directory_materialises_and_doctors(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    encode_with_fst(
+        fst=FakeFST(),
+        data=pd.DataFrame(
+            {"sentence_id": ["s1"], "sentence": ["Technology can reduce emissions."]}
+        ),
+        sentence_id_col="sentence_id",
+        out_dir=run_dir,
+        resume=False,
+    )
+    (run_dir / "frame_elements_long.csv").unlink()
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--input", str(run_dir), "--out", str(tmp_path / "unused")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "canonical run directory" in result.output
+    assert '"graph_ready": true' in result.output
+    assert (run_dir / "frame_elements_long.csv").exists()
+    assert "fst2framegraph build --input" in result.output
+
+
+def test_run_on_graph_ready_csv_creates_canonical_run(tmp_path: Path) -> None:
+    csv_path = tmp_path / "frame_elements_long.csv"
+    out_dir = tmp_path / "fst_clean"
+    graph_ready_rows().to_csv(csv_path, index=False)
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--input", str(csv_path), "--out", str(out_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (out_dir / "fst_clean.jsonl").exists()
+    assert (out_dir / "frame_elements_long.csv").exists()
+    assert '"graph_ready": true' in result.output
+
+
+def test_run_on_convertible_jsonl_creates_canonical_run(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "fst.jsonl"
+    jsonl_path.write_text(
+        json.dumps(
+            {
+                "sentence_id": "s1",
+                "doc_id": "d1",
+                "sentence": "Technology can help consumers reduce emissions.",
+                "frames": [
+                    {
+                        "frame_index": 0,
+                        "frame_name": "Assistance",
+                        "target_text": "help",
+                        "target_start": 15,
+                        "target_end": 19,
+                        "frame_elements": [
+                            {
+                                "element_index": 0,
+                                "element_name": "Goal",
+                                "element_filler": "consumers reduce emissions",
+                                "filler_start": 20,
+                                "filler_end": 46,
+                                "span_status": "exact_unique",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--input", str(jsonl_path), "--out", str(tmp_path / "fst_clean")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "fst_clean" / "fst_clean.jsonl").exists()
+    assert (tmp_path / "fst_clean" / "frame_elements_long.csv").exists()
+
+
+def test_run_on_raw_sentence_csv_uses_detect_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "sentences.csv"
+    csv_path.write_text(
+        "sentence_id,doc_id,sentence\ns1,d1,Technology can reduce emissions.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "fst2framegraph.fst.export._make_default_fst",
+        lambda device: FakeFST(),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--input",
+            str(csv_path),
+            "--text-col",
+            "sentence",
+            "--id-col",
+            "sentence_id",
+            "--doc-col",
+            "doc_id",
+            "--out",
+            str(tmp_path / "fst_clean"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "fst_clean" / "fst_clean.jsonl").exists()
+    report = json.loads(
+        (tmp_path / "fst_clean" / "extraction_report.json").read_text(encoding="utf-8")
+    )
+    assert report["dedupe_enabled"] is True
+    assert report["unique_texts"] == 1
+
+
+def test_run_on_flat_only_csv_exits_without_graph_ready_claim(tmp_path: Path) -> None:
+    csv_path = tmp_path / "flat.csv"
+    graph_ready_rows().drop(
+        columns=["frame_index", "target_start", "target_end", "filler_start", "filler_end"]
+    ).to_csv(csv_path, index=False)
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--input", str(csv_path), "--out", str(tmp_path / "fst_clean")],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "flat-only" in result.output
+    assert "Flat frame/FE counts may be possible" in result.output
+    assert '"graph_ready": false' in result.output
+    assert not (tmp_path / "fst_clean" / "fst_clean.jsonl").exists()
+
+
+def test_run_pickle_folder_refuses_without_allow_pickle(tmp_path: Path) -> None:
+    pickle_dir = tmp_path / "pickles"
+    pickle_dir.mkdir()
+    (pickle_dir / "result.pkl").write_bytes(pickle.dumps([]))
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "--input", str(pickle_dir), "--out", str(tmp_path / "fst_clean")],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Pickles can execute code" in result.output
+    assert "fst2framegraph run --input" in result.output
+    assert "--allow-pickle" in result.output
+    assert not (tmp_path / "fst_clean" / "fst_clean.jsonl").exists()
+
+
+def test_run_materialises_directory_when_csv_missing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    encode_with_fst(
+        fst=FakeFST(),
+        data=pd.DataFrame(
+            {"sentence_id": ["s1"], "sentence": ["Technology can reduce emissions."]}
+        ),
+        sentence_id_col="sentence_id",
+        out_dir=run_dir,
+        resume=False,
+    )
+    (run_dir / "frame_elements_long.csv").unlink()
+
+    result = CliRunner().invoke(app, ["run", "--input", str(run_dir), "--out", str(run_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert (run_dir / "frame_elements_long.csv").exists()
+
+
+def test_run_interactive_defaults_no_for_pickle_loading(tmp_path: Path) -> None:
+    pickle_dir = tmp_path / "pickles"
+    pickle_dir.mkdir()
+    (pickle_dir / "result.pkl").write_bytes(pickle.dumps([]))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--interactive",
+            "--input",
+            str(pickle_dir),
+            "--out",
+            str(tmp_path / "fst_clean"),
+        ],
+        input="\n",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Load trusted pickles?" in result.output
+    assert not (tmp_path / "fst_clean" / "fst_clean.jsonl").exists()
+
+
 def test_doctor_cli_checks_run_dir(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     encode_with_fst(
@@ -503,6 +723,7 @@ def test_core_cli_help_commands() -> None:
         ["inspect", "--help"],
         ["convert", "--help"],
         ["prepare", "--help"],
+        ["run", "--help"],
         ["materialise", "--help"],
         ["build-framebase-index", "--help"],
         ["build", "--help"],
@@ -513,14 +734,19 @@ def test_core_cli_help_commands() -> None:
         assert "Usage" in result.output
 
     prepare_help = runner.invoke(app, ["prepare", "--help"])
+    run_help = runner.invoke(app, ["run", "--help"])
     build_help = runner.invoke(app, ["build", "--help"])
     detect_help = runner.invoke(app, ["detect", "--help"])
     assert "Prepare existing FST-like output" in prepare_help.output
+    assert "inspect + plan + execute" in run_help.output
+    assert "--plan" in run_help.output
+    assert "--dedupe" in run_help.output
     assert "CSV file or canonical" in build_help.output
     assert "run directory" in build_help.output
     assert "raw sentence CSV" in detect_help.output
     assert "--text-col" in detect_help.output
     assert "--id-col" in detect_help.output
+    assert "--dedupe" in detect_help.output
 
 
 def test_public_example_files_are_usable(tmp_path: Path) -> None:

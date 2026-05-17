@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import gzip
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fst2framegraph.framebase.iri import fe_iri, frame_iri
 from fst2framegraph.normalise.text import clean_text
+
+
+LABEL_RE = re.compile(r"(<[^>]+>)\s+rdfs:label\s+\"([^\"]+)\"")
+
+
+def _open_text(path: Path):
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return path.open("r", encoding="utf-8", errors="replace")
 
 
 def _tail(resource: str) -> str:
@@ -78,25 +89,23 @@ class FrameBaseSchema:
     def from_turtle(cls, path: Path | None) -> "FrameBaseSchema":
         if path is None:
             return cls.empty()
-        from rdflib import Graph, RDFS
-
-        g = Graph()
-        g.parse(path)
         schema = cls.empty()
-
-        for s, p, o in g:
-            s_str = str(s)
-            if p == RDFS.label:
-                schema.labels[s_str] = clean_text(o)
-            if "/frame/" in s_str or _tail(s_str).startswith(("Microframe.", "frame.")):
-                name = _frame_from_resource(s_str)
-                if name:
-                    schema.frame_lookup.setdefault(name, s_str)
-            if "/fe/" in s_str or _tail(s_str).startswith("fe.") or ".has_" in _tail(s_str):
-                frame_name, fe_name = _fe_from_resource(s_str)
-                if frame_name and fe_name:
-                    for key in _lookup_keys(frame_name, fe_name):
-                        schema.fe_lookup.setdefault(key, s_str)
+        with _open_text(path) as fh:
+            for line in fh:
+                match = LABEL_RE.search(line)
+                if not match:
+                    continue
+                iri = match.group(1)[1:-1]
+                schema.labels[iri] = clean_text(match.group(2))
+                if "/frame/" in iri or _tail(iri).startswith(("Microframe.", "frame.")):
+                    name = _frame_from_resource(iri)
+                    if name:
+                        schema.frame_lookup.setdefault(name, iri)
+                if "/fe/" in iri or _tail(iri).startswith("fe.") or ".has_" in _tail(iri):
+                    frame_name, fe_name = _fe_from_resource(iri)
+                    if frame_name and fe_name:
+                        for key in _lookup_keys(frame_name, fe_name):
+                            schema.fe_lookup.setdefault(key, iri)
         return schema
 
     def get_frame_iri(self, frame_name: str) -> tuple[str, bool]:

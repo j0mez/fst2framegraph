@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import typer
 from rich.console import Console
 
@@ -21,6 +22,7 @@ from fst2framegraph.framebase.index import (
 from fst2framegraph.framebase.load_dbp_labels import load_dbp_labels
 from fst2framegraph.framebase.load_schema import FrameBaseSchema
 from fst2framegraph.framebase.parse_dered_rules import parse_dered_rules
+from fst2framegraph.framebase.parse_spin_rules import parse_spin_dereification_rules
 from fst2framegraph.framebase.rule_index import RuleIndex
 from fst2framegraph.fst import encode_with_fst, materialise_run
 from fst2framegraph.graph.build_dereified import build_dereified_edges
@@ -29,6 +31,8 @@ from fst2framegraph.graph.build_reified import build_reified_tables
 from fst2framegraph.graph.export_graph import build_sentence_graphs, write_graphml, write_turtle
 from fst2framegraph.io.column_detection import detect_columns
 from fst2framegraph.io.inspect_outputs import (
+    FLAT_COLUMNS,
+    GRAPH_READY_COLUMNS,
     convert_fst_outputs,
     doctor_run,
     inspect_fst_outputs,
@@ -67,7 +71,11 @@ def _resolve_framebase_paths(
     found = find_framebase_files(framebase_dir) if framebase_dir is not None else {}
     core = framebase_core or found.get("core_schema")
     labels = dbp_labels or found.get("dbp_labels")
-    rules = dered_rules or found.get("dereification_rules_sparql")
+    rules = (
+        dered_rules
+        or found.get("dereification_rules_spin")
+        or found.get("dereification_rules_sparql")
+    )
     return core, labels, rules, {
         "framebase_dir": str(framebase_dir) if framebase_dir else None,
         "framebase_core": str(core) if core else None,
@@ -122,6 +130,88 @@ def _prepare_build_command(out: Path) -> str:
     )
 
 
+def _run_command(
+    *,
+    input: Path,
+    out: Path,
+    graph: bool = False,
+    graph_out: Path | None = None,
+    framebase_index: Path | None = None,
+    framebase_dir: Path | None = None,
+    text_col: str = "sentence",
+    id_col: str | None = None,
+    doc_col: str | None = None,
+    allow_pickle: bool = False,
+    resume: bool = True,
+    checkpoint_every: int = 100,
+    batch_size: int = 16,
+    device: str = "auto",
+    dedupe: bool = True,
+    dedupe_normalise: str = "exact",
+    plan: bool = False,
+    yes: bool = False,
+    interactive: bool = False,
+) -> str:
+    parts = ["fst2framegraph run", "--input", str(input), "--out", str(out)]
+    if graph:
+        parts.append("--graph")
+    if graph_out is not None:
+        parts.extend(["--graph-out", str(graph_out)])
+    if framebase_index is not None:
+        parts.extend(["--framebase-index", str(framebase_index)])
+    if framebase_dir is not None:
+        parts.extend(["--framebase-dir", str(framebase_dir)])
+    if text_col != "sentence":
+        parts.extend(["--text-col", text_col])
+    if id_col is not None:
+        parts.extend(["--id-col", id_col])
+    if doc_col is not None:
+        parts.extend(["--doc-col", doc_col])
+    if allow_pickle:
+        parts.append("--allow-pickle")
+    if not resume:
+        parts.append("--no-resume")
+    if checkpoint_every != 100:
+        parts.extend(["--checkpoint-every", str(checkpoint_every)])
+    if batch_size != 16:
+        parts.extend(["--batch-size", str(batch_size)])
+    if device != "auto":
+        parts.extend(["--device", device])
+    if not dedupe:
+        parts.append("--no-dedupe")
+    if dedupe_normalise != "exact":
+        parts.extend(["--dedupe-normalise", dedupe_normalise])
+    if plan:
+        parts.append("--dry-run")
+    if yes:
+        parts.append("--yes")
+    if interactive:
+        parts.append("--interactive")
+    return " ".join(parts)
+
+
+def _detect_next_command_for_input(
+    input: Path,
+    out: Path,
+    text_col: str,
+    id_col: str | None,
+    doc_col: str | None,
+) -> str:
+    parts = [
+        "fst2framegraph detect",
+        "--input",
+        str(input),
+        "--text-col",
+        text_col,
+    ]
+    if id_col is not None:
+        parts.extend(["--id-col", id_col])
+    if doc_col is not None:
+        parts.extend(["--doc-col", doc_col])
+    parts.extend(["--out", str(out), "--resume"])
+    return " ".join(parts)
+
+
 def _detect_next_command() -> str:
     return (
         "fst2framegraph detect "
@@ -132,6 +222,189 @@ def _detect_next_command() -> str:
         "--out fst_clean "
         "--resume"
     )
+
+
+def _looks_like_raw_text_table(path: Path, text_col: str) -> bool:
+    if path.is_dir() or path.suffix.lower() != ".csv":
+        return False
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(path, nrows=5)
+    except Exception:
+        return False
+    columns = set(df.columns)
+    if text_col not in columns:
+        return False
+    graph_signal_columns = set(GRAPH_READY_COLUMNS) - {"sentence_id", "sentence"}
+    has_graph_columns = any(col in columns for col in graph_signal_columns)
+    has_flat_columns = any(col in columns for col in FLAT_COLUMNS)
+    return not has_graph_columns and not has_flat_columns
+
+
+def _plan_label(inspection: dict[str, object], *, raw_text: bool) -> str:
+    if raw_text:
+        return "raw sentence CSV"
+    detected = str(inspection.get("detected_format"))
+    return {
+        "graph_ready_csv": "graph-ready CSV",
+        "fst_jsonl": "convertible JSONL",
+        "fst_json": "convertible JSON",
+        "v0.3_run_directory": "canonical run directory",
+        "pickle_folder": "pickle folder",
+        "pickle_file": "pickle file",
+        "flattened_csv": "flat-only CSV" if inspection.get("flat_only") else "flattened CSV",
+    }.get(detected, detected.replace("_", " "))
+
+
+def _print_run_plan(
+    *,
+    input: Path,
+    out: Path,
+    graph_out: Path | None,
+    framebase_index: Path | None,
+    framebase_dir: Path | None,
+    inspection: dict[str, object],
+    raw_text: bool,
+    text_col: str,
+    id_col: str | None,
+    doc_col: str | None,
+    allow_pickle: bool,
+    resume: bool,
+    checkpoint_every: int,
+    batch_size: int,
+    device: str,
+    dedupe: bool,
+    dedupe_normalise: str,
+) -> None:
+    detected = _plan_label(inspection, raw_text=raw_text)
+    actions: list[str] = []
+    if raw_text:
+        actions.extend(
+            [
+                f"run FrameSemanticTransformer into canonical run directory: {out}",
+                "dedupe identical input texts before FST inference" if dedupe else "run FST once per input row",
+                "materialise CSV/report outputs",
+                "run doctor checks",
+            ]
+        )
+    elif inspection.get("detected_format") == "v0.3_run_directory":
+        actions.extend(["materialise CSV/report outputs if needed", "run doctor checks"])
+    elif inspection.get("convertible") or (
+        allow_pickle and inspection.get("detected_format") in {"pickle_file", "pickle_folder"}
+    ):
+        actions.extend(
+            [
+                f"convert input to canonical run directory: {out}",
+                "materialise CSV/report outputs",
+                "run doctor checks",
+            ]
+        )
+    elif inspection.get("flat_only"):
+        actions.append("stop: flat-only data cannot support reliable nested graph building")
+    else:
+        actions.append("stop: inspect output is insufficient for an automatic workflow")
+
+    console.print(f"Detected: {detected}\n")
+    console.print("Planned actions:")
+    for i, action in enumerate(actions, start=1):
+        console.print(f"  {i}. {action}")
+
+    if graph_out and (framebase_index or framebase_dir):
+        console.print(f"\nGraph build: planned into {graph_out}.")
+    else:
+        console.print(
+            "\nGraph build: skipped because --graph-out and --framebase-index were not provided."
+        )
+
+    console.print("\nTo execute:")
+    console.print(
+        "  "
+        + _run_command(
+            input=input,
+            out=out,
+            graph=graph_out is not None,
+            graph_out=graph_out,
+            framebase_index=framebase_index,
+            framebase_dir=framebase_dir,
+            text_col=text_col,
+            id_col=id_col,
+            doc_col=doc_col,
+            allow_pickle=allow_pickle,
+            resume=resume,
+            checkpoint_every=checkpoint_every,
+            batch_size=batch_size,
+            device=device,
+            dedupe=dedupe,
+            dedupe_normalise=dedupe_normalise,
+        )
+    )
+
+
+def _graph_build_requested(
+    graph_out: Path | None,
+    framebase_index: Path | None,
+    framebase_dir: Path | None,
+) -> bool:
+    return graph_out is not None and (framebase_index is not None or framebase_dir is not None)
+
+
+def _run_graph_build_if_requested(
+    *,
+    run_dir: Path,
+    graph_out: Path | None,
+    framebase_index: Path | None,
+    framebase_dir: Path | None,
+) -> dict[str, object] | None:
+    if graph_out is None:
+        return None
+    index_path = _resolve_framebase_index(framebase_dir, framebase_index)
+    if index_path is None and framebase_dir is not None:
+        expected = framebase_dir / "framebase_index.sqlite"
+        return {
+            "status": "skipped",
+            "message": "FrameBase index was not found in --framebase-dir.",
+            "next_command": (
+                "fst2framegraph build-framebase-index "
+                f"--framebase-dir {framebase_dir} "
+                f"--index {expected}"
+            ),
+        }
+    if index_path is None:
+        return {
+            "status": "skipped",
+            "message": "--graph-out was provided without --framebase-index or --framebase-dir.",
+            "next_command": _prepare_build_command(run_dir),
+        }
+    build(
+        input=run_dir,
+        out=graph_out,
+        framebase_dir=None,
+        framebase_core=None,
+        dbp_labels=None,
+        dered_rules=None,
+        framebase_index=index_path,
+        require_framebase=False,
+        doc_col=None,
+        sentence_col=None,
+        frame_col=None,
+        fe_col=None,
+        filler_col=None,
+        sentence_id_col=None,
+        frame_index_col=None,
+        target_col=None,
+        target_start_col=None,
+        target_end_col=None,
+        filler_start_col=None,
+        filler_end_col=None,
+        confidence_col=None,
+        brand_col=None,
+        year_col=None,
+        min_filler_len=1,
+        no_rdf=False,
+        no_graphml=False,
+    )
+    return {"status": "built", "graph_out": str(graph_out), "framebase_index": str(index_path)}
 
 
 @app.command("setup-framebase")
@@ -213,11 +486,11 @@ def build(
     framebase_dir: Optional[Path] = typer.Option(
         None,
         "--framebase-dir",
-        help="Directory containing FrameBase_schema_core.ttl.gz, FrameBase_schema_dbps.ttl.gz and dereificationRulesSparqlFormat.txt.zip. Defaults to data/framebase if present.",
+        help="Directory containing current FrameBase 2.0 schema/rule files. Defaults to data/framebase if present.",
     ),
     framebase_core: Optional[Path] = typer.Option(None, help="FrameBase core schema TTL/Turtle gzip."),
     dbp_labels: Optional[Path] = typer.Option(None, help="FrameBase direct binary predicate labels TTL/Turtle gzip."),
-    dered_rules: Optional[Path] = typer.Option(None, help="FrameBase dereification rules, SPARQL zip or text."),
+    dered_rules: Optional[Path] = typer.Option(None, help="FrameBase dereification rules, preferably SPIN Turtle(.gz)."),
     framebase_index: Optional[Path] = typer.Option(
         None,
         "--framebase-index",
@@ -342,26 +615,51 @@ def build(
         if rules_path:
             console.print(f"  rules: {rules_path}")
         labels = load_dbp_labels(labels_path)
-        rules = parse_dered_rules(rules_path, labels)
+        if rules_path and "spin" in rules_path.name.lower():
+            rules = list(parse_spin_dereification_rules(rules_path, labels))
+        else:
+            rules = parse_dered_rules(rules_path, labels)
     rule_index = RuleIndex.from_rules(rules)
     if index_path and not rules:
-        warnings.append("FrameBase index contains no dereification rules; DBP dereified edges disabled.")
+        warnings.append(
+            "DBP schema/labels are available, but dereification rules are not supplied."
+        )
     elif rules_path and not rules:
         warnings.append("No dereification rules were parsed. Check the FrameBase rule file format.")
+    if rules_path is None and labels_path is not None:
+        warnings.append(
+            "DBP schema/labels are available, but dereification rules are not supplied."
+        )
 
     console.print(f"[bold]Parsed rules:[/bold] {len(rules)}")
     console.print("[bold]Building dereified graph[/bold]")
-    dereified_edges = build_dereified_edges(frame_elements, rule_index)
+    dereified_edges, dereification_diagnostics, dereification_stats = build_dereified_edges(
+        frame_instances, frame_elements, rule_index
+    )
 
     console.print("[bold]Writing outputs[/bold]")
     write_csv(documents, out, "documents.csv")
     write_csv(sentences, out, "sentences.csv")
     write_csv(frame_instances, out, "frame_instances.csv")
     write_csv(frame_elements, out, "frame_elements.csv")
+    write_csv(
+        frame_elements.rename(
+            columns={
+                "fe_name": "element_name",
+                "filler_text": "element_filler",
+            }
+        ),
+        out,
+        "frame_elements_long.csv",
+    )
     write_csv(nodes, out, "graph_nodes.csv")
     write_csv(reified_edges, out, "graph_edges_reified.csv")
     write_csv(nested_edges, out, "graph_edges_nested.csv")
     write_csv(dereified_edges, out, "graph_edges_dereified.csv")
+    write_csv(dereified_edges, out, "direct_edges.csv")
+    write_csv(dereification_diagnostics, out, "dereification_diagnostics.csv")
+    edges = pd.concat([reified_edges, nested_edges, dereified_edges], ignore_index=True, sort=False)
+    write_csv(edges, out, "edges.csv")
 
     sentence_graphs = build_sentence_graphs(
         sentences, frame_instances, frame_elements, nested_edges, dereified_edges
@@ -379,8 +677,25 @@ def build(
         dereified_edges=dereified_edges,
         warnings=warnings,
     )
-    write_json(qc.model_dump(), out, "qc_report.json")
-    write_json(qc.model_dump(), out, "summary.json")
+    qc_payload = qc.model_dump()
+    summary_payload = {
+        **qc_payload,
+        "nested_edges": int(len(nested_edges)),
+        "projected_fe_edges": 0,
+        "official_framebase_reder_edges": int(len(dereified_edges)),
+        "rule_pack_edges": 0,
+        "dereification_rules_loaded": int(len(rules)),
+        "dereification_rules_matched": int(dereification_stats["dereification_rules_matched"]),
+        "dereification_rule_match_ambiguous": int(dereification_stats["dereification_rule_match_ambiguous"]),
+        "dereification_rule_match_unmatched": int(dereification_stats["dereification_rule_match_unmatched"]),
+        "dereification_opportunities": int(dereification_stats["dereification_opportunities"]),
+        "framebase_index_used": bool(index_path),
+        "framebase_index_path": str(index_path) if index_path else None,
+        "spin_rules_source": str(rules_path) if rules_path and "spin" in rules_path.name.lower() else None,
+        "warnings": warnings,
+    }
+    write_json(qc_payload, out, "qc_report.json")
+    write_json(summary_payload, out, "summary.json")
     write_json(
         {
             "input": str(input),
@@ -416,7 +731,18 @@ def detect(
     doc_col: Optional[str] = typer.Option(None, "--doc-col", help="Optional document ID column."),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume existing run state."),
     batch_size: int = typer.Option(16, "--batch-size", help="FST batch size."),
+    device: str = typer.Option("auto", "--device", help="FST device: auto, cpu, mps, cuda."),
     checkpoint_every: int = typer.Option(100, "--checkpoint-every", help="Checkpoint interval."),
+    dedupe: bool = typer.Option(
+        True,
+        "--dedupe/--no-dedupe",
+        help="Run FST once per unique input text before expanding back to all rows.",
+    ),
+    dedupe_normalise: str = typer.Option(
+        "exact",
+        "--dedupe-normalise",
+        help="Text dedupe mode: exact or normalised.",
+    ),
 ) -> None:
     """Run FrameSemanticTransformer over a raw sentence CSV and write a canonical run."""
     import pandas as pd
@@ -449,7 +775,10 @@ def detect(
             out_dir=out,
             resume=resume,
             batch_size=batch_size,
+            device=device,
             checkpoint_every=checkpoint_every,
+            dedupe=dedupe,
+            dedupe_normalise=dedupe_normalise,
         )
     except Exception as exc:
         console.print(f"[red]{exc}[/red]")
@@ -614,6 +943,241 @@ def prepare_outputs(
         }
     )
     if not graph_ready:
+        raise typer.Exit(1)
+
+
+@app.command("run")
+def run_workflow(
+    input: Path = typer.Option(..., "--input", help="File or folder to inspect and process."),
+    out: Path = typer.Option(..., "--out", help="Canonical fst_clean output directory."),
+    graph: bool = typer.Option(False, "--graph/--no-graph", help="Build the graph after prepare/detect when possible."),
+    graph_out: Optional[Path] = typer.Option(None, "--graph-out", help="Optional graph output directory."),
+    framebase_index: Optional[Path] = typer.Option(None, "--framebase-index", help="FrameBase SQLite index."),
+    framebase_dir: Optional[Path] = typer.Option(None, "--framebase-dir", help="Directory containing framebase_index.sqlite."),
+    text_col: str = typer.Option("sentence", "--text-col", help="Raw text sentence column."),
+    id_col: Optional[str] = typer.Option(None, "--id-col", help="Optional sentence ID column for raw text."),
+    doc_col: Optional[str] = typer.Option(None, "--doc-col", help="Optional document ID column for raw text."),
+    allow_pickle: bool = typer.Option(False, "--allow-pickle", help="Allow loading trusted Python pickles."),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume existing run state."),
+    checkpoint_every: int = typer.Option(100, "--checkpoint-every", help="Checkpoint interval for FST runs."),
+    batch_size: int = typer.Option(16, "--batch-size", help="FST batch size for raw text input."),
+    device: str = typer.Option("auto", "--device", help="FST device: auto, cpu, mps, cuda."),
+    dedupe: bool = typer.Option(
+        True,
+        "--dedupe/--no-dedupe",
+        help="Dedupe identical raw input texts before FST inference.",
+    ),
+    dedupe_normalise: str = typer.Option(
+        "exact",
+        "--dedupe-normalise",
+        help="Text dedupe mode for raw input: exact or normalised.",
+    ),
+    plan: bool = typer.Option(False, "--dry-run", "--plan", help="Inspect and print planned actions without writing files."),
+    yes: bool = typer.Option(False, "--yes", help="Skip non-risky confirmations."),
+    interactive: bool = typer.Option(False, "--interactive", help="Ask guided questions when helpful."),
+) -> None:
+    """Smart workflow: inspect + plan + execute."""
+    try:
+        inspection = inspect_fst_outputs(input)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    raw_text = _looks_like_raw_text_table(input, text_col)
+    if graph and graph_out is None:
+        graph_out = out / "graph"
+
+    if plan:
+        _print_run_plan(
+            input=input,
+            out=out,
+            graph_out=graph_out,
+            framebase_index=framebase_index,
+            framebase_dir=framebase_dir,
+            inspection=inspection,
+            raw_text=raw_text,
+            text_col=text_col,
+            id_col=id_col,
+            doc_col=doc_col,
+            allow_pickle=allow_pickle,
+            resume=resume,
+            checkpoint_every=checkpoint_every,
+            batch_size=batch_size,
+            device=device,
+            dedupe=dedupe,
+            dedupe_normalise=dedupe_normalise,
+        )
+        return
+
+    detected = inspection.get("detected_format")
+    status = inspection.get("status")
+
+    if status == "unsafe_without_pickle_permission" and not allow_pickle:
+        if interactive and typer.confirm(
+            "This folder contains pickles. Pickles can execute code. Load trusted pickles?",
+            default=False,
+        ):
+            allow_pickle = True
+        else:
+            console.print_json(
+                data={
+                    "message": "Pickles can execute code. Run only on trusted files with --allow-pickle.",
+                    "detected_format": detected,
+                    "status": status,
+                    "graph_ready": False,
+                    "next_command": (
+                        "fst2framegraph run "
+                        f"--input {input} "
+                        f"--out {out} "
+                        "--allow-pickle"
+                    ),
+                }
+            )
+            raise typer.Exit(1)
+
+    if inspection.get("flat_only"):
+        console.print_json(
+            data={
+                "message": (
+                    "Input is flat-only. Flat frame/FE counts may be possible, but reliable "
+                    "nested graphs require frame_index and target/filler spans."
+                ),
+                "detected_format": detected,
+                "status": status,
+                "graph_ready": False,
+                "missing_required_columns": inspection.get("missing_required_columns", []),
+                "next_command": _detect_next_command_for_input(input, out, text_col, id_col, doc_col),
+            }
+        )
+        raise typer.Exit(1)
+
+    graph_report = None
+    try:
+        if detected == "v0.3_run_directory":
+            run_dir = input
+            materialise_report = materialise_run(run_dir)
+            doctor_report = doctor_run(run_dir=run_dir, framebase_index=framebase_index)
+            graph_report = _run_graph_build_if_requested(
+                run_dir=run_dir,
+                graph_out=graph_out,
+                framebase_index=framebase_index,
+                framebase_dir=framebase_dir,
+            )
+            result = {
+                "message": f"Checked canonical run directory: {run_dir}",
+                "detected_format": detected,
+                "status": inspect_fst_outputs(run_dir).get("status"),
+                "graph_ready": True,
+                "canonical_run_dir": str(run_dir),
+                "materialise_report": materialise_report,
+                "doctor": doctor_report,
+                "graph": graph_report,
+                "next_command": _prepare_build_command(run_dir),
+            }
+        elif raw_text:
+            if interactive and not yes and not typer.confirm(
+                "This looks like a raw sentence CSV. Run FrameSemanticTransformer now?",
+                default=False,
+            ):
+                console.print_json(
+                    data={
+                        "message": "Stopped before FST inference.",
+                        "detected_format": "raw_sentence_csv",
+                        "graph_ready": False,
+                        "next_command": _detect_next_command_for_input(
+                            input, out, text_col, id_col, doc_col
+                        ),
+                    }
+                )
+                raise typer.Exit(1)
+            report = encode_with_fst(
+                data=input,
+                sentence_col=text_col,
+                sentence_id_col=id_col,
+                doc_col=doc_col,
+                out_dir=out,
+                resume=resume,
+                checkpoint_every=checkpoint_every,
+                batch_size=batch_size,
+                device=device,
+                dedupe=dedupe,
+                dedupe_normalise=dedupe_normalise,
+            )
+            materialise_report = materialise_run(out)
+            doctor_report = doctor_run(run_dir=out, framebase_index=framebase_index)
+            graph_report = _run_graph_build_if_requested(
+                run_dir=out,
+                graph_out=graph_out,
+                framebase_index=framebase_index,
+                framebase_dir=framebase_dir,
+            )
+            result = {
+                "message": f"Ran FST into canonical run directory: {out}",
+                "detected_format": "raw_sentence_csv",
+                "status": inspect_fst_outputs(out).get("status"),
+                "graph_ready": report.get("frame_elements", 0) > 0,
+                "canonical_run_dir": str(out),
+                "report": report,
+                "materialise_report": materialise_report,
+                "doctor": doctor_report,
+                "graph": graph_report,
+                "next_command": _prepare_build_command(out),
+            }
+        elif inspection.get("convertible") or (
+            allow_pickle and detected in {"pickle_file", "pickle_folder"}
+        ):
+            convert_report = convert_fst_outputs(
+                input,
+                out,
+                allow_pickle=allow_pickle,
+            )
+            materialise_report = materialise_run(out)
+            doctor_report = doctor_run(run_dir=out, framebase_index=framebase_index)
+            prepared = inspect_fst_outputs(out)
+            graph_report = _run_graph_build_if_requested(
+                run_dir=out,
+                graph_out=graph_out,
+                framebase_index=framebase_index,
+                framebase_dir=framebase_dir,
+            )
+            result = {
+                "message": f"Prepared canonical run directory: {out}",
+                "detected_format": detected,
+                "status": prepared.get("status"),
+                "graph_ready": bool(prepared.get("graph_ready")),
+                "canonical_run_dir": str(out),
+                "conversion_report": convert_report,
+                "materialise_report": materialise_report,
+                "doctor": doctor_report,
+                "graph": graph_report,
+                "next_command": _prepare_build_command(out),
+            }
+        else:
+            console.print_json(
+                data={
+                    "message": f"Input is not runnable automatically ({status}).",
+                    "detected_format": detected,
+                    "status": status,
+                    "graph_ready": False,
+                    "next_command": f"fst2framegraph inspect --input {input}",
+                }
+            )
+            raise typer.Exit(1)
+    except ImportError as exc:
+        console.print(
+            "[red]"
+            + str(exc)
+            + " Use Python 3.10/3.11 for real FST inference when possible.[/red]"
+        )
+        raise typer.Exit(1) from exc
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print_json(data=result)
+    if graph_report and graph_report.get("status") == "skipped":
         raise typer.Exit(1)
 
 

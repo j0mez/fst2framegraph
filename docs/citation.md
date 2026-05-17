@@ -10,3 +10,6 @@ This package builds on external resources. Depending on your workflow, also cite
 
 FrameBase data is not bundled in this repository. Users download or register FrameBase files
 separately, and those files remain under their own licence. See `THIRD_PARTY_NOTICES.md`.
+
+When you use current FrameBase 2.0 SPIN dereification rules or DBP schema files, also acknowledge
+that the underlying FrameBase data is distributed separately under CC BY 4.0.

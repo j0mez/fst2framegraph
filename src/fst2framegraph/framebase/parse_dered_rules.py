@@ -170,14 +170,20 @@ def _parse_construct(chunk: str, prefixes: dict[str, str], file_name: str, i: in
 
     return FrameBaseRule(
         rule_id=f"{Path(file_name).stem}_{i}",
+        source_format="sparql",
+        source_file=file_name,
         frame_iri=frame_res,
         frame_name=frame_name,
         subject_fe_iri=sub_fe,
         object_fe_iri=obj_fe,
         subject_fe_name=sub_fe_name,
         object_fe_name=obj_fe_name,
+        dbp_predicate_iri=dbp_res,
+        dbp_predicate_name=_tail(dbp_res).split(".", 1)[-1] if "." in _tail(dbp_res) else _tail(dbp_res),
         dbp_iri=dbp_res,
         dbp_label=label_for_dbp(dbp_res, labels),
+        raw_construct_node=f"{Path(file_name).stem}_{i}",
+        parse_status="parsed",
         raw_rule=chunk[:4000],
     )
 

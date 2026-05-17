@@ -40,55 +40,80 @@ Python 3.10-3.12.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 
+## One-command quickstart
+
+`run` is the easiest entry point. It means: inspect the input, plan the workflow, then execute the
+safe next steps.
+
+Prepare any supported file or folder as a canonical run directory:
+
+```bash
+fst2framegraph run --input YOUR_FILE_OR_FOLDER --out fst_clean
+```
+
+Prepare and build a graph in one go:
+
+```bash
+fst2framegraph run \
+  --input YOUR_FILE_OR_FOLDER \
+  --out fst_clean \
+  --graph \
+  --framebase-index framebase_index.sqlite
+```
+
+Preview without writing files, loading pickles, running FST, or building graphs:
+
+```bash
+fst2framegraph run --plan --input YOUR_FILE_OR_FOLDER --out fst_clean
+```
+
+Use `--interactive` for guided questions. Non-interactive mode is the default for scripts, Colab
+and CI.
+
 ## The smooth path
 
 What do you have?
 
 ```text
 Raw text / sentence CSV
-  -> fst2framegraph detect
-  -> fst2framegraph build
+  -> fst2framegraph run --input sentences.csv --text-col sentence --id-col sentence_id --doc-col doc_id --out fst_clean
 
 Existing FST output
-  -> fst2framegraph prepare
-  -> fst2framegraph build
+  -> fst2framegraph run --input old_fst_outputs --out fst_clean
 
 Weird folder / unknown files
-  -> fst2framegraph inspect
+  -> fst2framegraph inspect --input whatever
 
 Clean canonical run directory
-  -> fst2framegraph build --input fst_clean
+  -> fst2framegraph build --input fst_clean --out graph_output --framebase-index framebase_index.sqlite
 ```
 
 For existing FST-like outputs:
 
 ```bash
-fst2framegraph prepare --input old_fst_outputs --out fst_clean
-fst2framegraph build \
-  --input fst_clean \
-  --out graph_output \
+fst2framegraph run \
+  --input old_fst_outputs \
+  --out fst_clean \
+  --graph-out graph_output \
   --framebase-index data/framebase/framebase_index.sqlite
 ```
 
 For raw text or a sentence CSV:
 
 ```bash
-fst2framegraph detect \
+fst2framegraph run \
   --input sentences.csv \
   --text-col sentence \
   --id-col sentence_id \
   --doc-col doc_id \
   --out fst_clean \
-  --resume
-
-fst2framegraph build \
-  --input fst_clean \
-  --out graph_output \
+  --graph-out graph_output \
   --framebase-index data/framebase/framebase_index.sqlite
 ```
 
-Use `inspect` when you are unsure what a file or folder contains. Use `prepare` when you already
-have FST-like outputs and want a canonical run directory for graph building.
+Use `inspect` when you are unsure what a file or folder contains. The explicit commands
+`prepare`, `detect`, `materialise`, `doctor` and `build` remain available for debugging and
+reproducible advanced workflows.
 
 ## Set up FrameBase files
 
@@ -107,12 +132,17 @@ If you already downloaded them manually, put the files into `data/framebase/` an
 fst2framegraph setup-framebase --out data/framebase --manifest-only
 ```
 
-Expected files:
+Minimal current FrameBase 2.0 files:
 
 ```text
 FrameBase_schema_core.ttl.gz
 FrameBase_schema_dbps.ttl.gz
-dereificationRulesSparqlFormat.txt.zip
+dereificationRulesSpinFormat.ttl.gz
+clusters.txt
+clusterPairs.txt
+lexicalClusters.txt
+manual/FrameBase_schema_manual_extensions.ttl
+manual/inferenceRulesForSchema.txt
 ```
 
 FrameBase data is licensed under Creative Commons Attribution 4.0 International by the FrameBase team at Aalborg University and Rutgers University. See `third_party/FRAMEBASE_ATTRIBUTION.md`.
@@ -135,7 +165,7 @@ fst2framegraph build \
   --require-framebase
 ```
 
-You can also pass the three FrameBase files explicitly:
+You can also pass the source files explicitly:
 
 ```bash
 fst2framegraph build \
@@ -143,12 +173,21 @@ fst2framegraph build \
   --out outputs/framegraph \
   --framebase-core data/framebase/FrameBase_schema_core.ttl.gz \
   --dbp-labels data/framebase/FrameBase_schema_dbps.ttl.gz \
-  --dered-rules data/framebase/dereificationRulesSparqlFormat.txt.zip \
+  --dered-rules data/framebase/dereificationRulesSpinFormat.ttl.gz \
   --require-framebase
 ```
 
 If no FrameBase index or source files are supplied, the graph build still works with generated
 fallback IRIs. Raw TTL files are source data; the recommended runtime path is the SQLite index.
+
+## ReDer matching
+
+Nested/reified FE edges are always derivable from FST output. Official direct DBP edges are only
+emitted when the current FrameBase 2.0 SPIN dereification rules match safely.
+
+- DBP schema files provide predicate vocabulary and labels.
+- SPIN dereification rules provide the actual mapping from frame plus FE pair to DBP predicate.
+- Ambiguous matches are reported in `dereification_diagnostics.csv`, not guessed silently.
 
 ## Workflow A: run FST over raw text
 
@@ -168,12 +207,26 @@ fst2framegraph materialise --run-dir outputs/fst_clean
 CLI example:
 
 ```bash
+fst2framegraph run \
+  --input sentences.csv \
+  --text-col sentence \
+  --id-col sentence_id \
+  --doc-col doc_id \
+  --out outputs/fst_clean \
+  --dedupe \
+  --resume
+```
+
+`detect` is the explicit lower-level equivalent for raw text:
+
+```bash
 fst2framegraph detect \
   --input sentences.csv \
   --text-col sentence \
   --id-col sentence_id \
   --doc-col doc_id \
   --out outputs/fst_clean \
+  --dedupe \
   --resume
 ```
 
@@ -206,6 +259,13 @@ rerun `fst2framegraph materialise --run-dir ...`.
 
 Input `sentence_id` values must be unique within a run because checkpoint/resume state is keyed by
 `sentence_id`.
+
+Before FST inference, exact text dedupe is enabled by default. It runs the parser once per unique
+sentence text and then expands the result back to every original `sentence_id`, `doc_id` and
+`row_index`. Use `--no-dedupe` or `dedupe=False` to preserve one-row-one-FST-call behavior. The
+optional `normalised` mode only trims leading/trailing whitespace and collapses repeated internal
+whitespace; fuzzy, embedding, semantic, lowercase, punctuation-stripping or Levenshtein dedupe is
+deliberately not included.
 
 Raw Python/FST objects are never saved by default. Portable JSONL records, including normalised
 frames and a JSON-safe parser result, are saved instead, so parser detail remains inspectable

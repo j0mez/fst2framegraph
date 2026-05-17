@@ -3,7 +3,7 @@
 from .fst import FSTGraphWriter, build_graph_from_clean, encode_with_fst, materialise_run
 from .io.inspect_outputs import convert_fst_outputs, inspect_fst_outputs
 
-__version__ = "0.3.2"
+__version__ = "0.4.0-alpha"
 
 
 def setup_framebase(*args, **kwargs):

@@ -40,10 +40,10 @@ FRAMEBASE_DOWNLOADS: tuple[FrameBaseDownload, ...] = (
         description="FrameBase 2.0 labels for direct binary predicates.",
     ),
     FrameBaseDownload(
-        key="dereification_rules_sparql",
-        file_name="dereificationRulesSparqlFormat.txt.zip",
-        url="https://www.framebase.org/files/data/reder_rules/dereificationRulesSparqlFormat.txt.zip",
-        description="FrameBase 2.0 dereification rules as SPARQL CONSTRUCT queries.",
+        key="dereification_rules_spin",
+        file_name="dereificationRulesSpinFormat.ttl.gz",
+        url="https://www.framebase.org/files/data/dump/schema/dereificationRulesSpinFormat.ttl.gz",
+        description="FrameBase 2.0 dereification rules as SPIN/Turtle.",
     ),
 )
 
@@ -152,11 +152,20 @@ def find_framebase_files(framebase_dir: Path | None = None) -> dict[str, Path | 
     candidates = {
         "core_schema": ["FrameBase_schema_core.ttl.gz", "FrameBase_schema_core.ttl"],
         "dbp_labels": ["FrameBase_schema_dbps.ttl.gz", "FrameBase_schema_dbps.ttl"],
+        "dereification_rules_spin": [
+            "dereificationRulesSpinFormat.ttl.gz",
+            "dereificationRulesSpinFormat.ttl",
+        ],
         "dereification_rules_sparql": [
             "dereificationRulesSparqlFormat.txt.zip",
             "dereificationRulesSparqlFormat.zip",
             "dereificationRulesSparqlFormat.txt",
         ],
+        "clusters": ["clusters.txt"],
+        "cluster_pairs": ["clusterPairs.txt"],
+        "lexical_clusters": ["lexicalClusters.txt"],
+        "manual_schema_extensions": ["manual/FrameBase_schema_manual_extensions.ttl"],
+        "manual_inference_rules": ["manual/inferenceRulesForSchema.txt"],
     }
     found: dict[str, Path | None] = {}
     for key, names in candidates.items():
