@@ -40,6 +40,23 @@ Python 3.10-3.12.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 
+## Reusable FrameGraphBuilder API
+
+For downstream analysis code, use the stable graph construction layer directly:
+
+```python
+from fst2framegraph import FrameGraphBuilder, from_fst_output
+
+documents = from_fst_output("path/to/fst_output")
+builder = FrameGraphBuilder()
+graph = builder.build_graph(documents)
+builder.save_graph(graph, "my_graph.graphml")
+```
+
+The graph schema is documented in `docs/graph_schema.md`. Fillers are globally
+merged by normalized text, sentence nodes are included by default, and no
+domain-specific roles or categories are hard-coded.
+
 ## One-command quickstart
 
 `run` is the easiest entry point. It means: inspect the input, plan the workflow, then execute the
