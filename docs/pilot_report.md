@@ -8,13 +8,15 @@ This mini-pilot tested whether `fst2framegraph` can produce useful graph outputs
 
 Pipeline attempted:
 
-1. Raw sentences in [`/Users/womble/Desktop/fst2framegraph/data/pilot/mini_pilot_sentences.csv`](/Users/womble/Desktop/fst2framegraph/data/pilot/mini_pilot_sentences.csv)
+1. Raw sentences in `data/pilot/mini_pilot_sentences.csv`
 2. Real FST inference attempt with `fst2framegraph detect`
-3. Fallback to synthetic graph-ready fixture in [`/Users/womble/Desktop/fst2framegraph/data/pilot/mini_pilot_fst_output.csv`](/Users/womble/Desktop/fst2framegraph/data/pilot/mini_pilot_fst_output.csv) because the local `frame_semantic_transformer` package was installed but its Hugging Face model weights were not cached and the environment had no network access
+3. Fallback to synthetic graph-ready fixture in `data/pilot/mini_pilot_fst_output.csv` because the local `frame_semantic_transformer` package was installed but its Hugging Face model weights were not cached and the environment had no network access
 4. `fst2framegraph prepare`
 5. `fst2framegraph build` against a temporary tiny FrameBase index with a small rule set
 
-The tiny FrameBase fixture was created in a temporary directory only and was not committed.
+The tiny FrameBase fixture was created in a temporary directory only and was not committed. These
+results prove graph mechanics and ambiguity handling; they are not claims about current real
+FrameBase 2.0 coverage for the same toy sentences.
 
 ## Counts
 
@@ -32,14 +34,14 @@ The tiny FrameBase fixture was created in a temporary directory only and was not
 
 Notes:
 
-- `official_framebase_reder_edges` came from the build summary and matched the `graph_edges_dereified.csv` row count.
+- `official_framebase_reder_edges` came from the tiny-fixture build summary and matched the `graph_edges_dereified.csv` row count for that fixture.
 - `unmatched opportunities` was `0`, but that does not mean coverage was complete. In this pilot, frames with no dereification rules were skipped before they reached that counter.
 
 ## What Worked
 
 The output is useful for the intended research direction when the input already has frame structure and the FrameBase rule pack covers the frame/role pair.
 
-Examples of good direct edges:
+Examples of good direct edges from the temporary tiny fixture:
 
 - `p002`: `ExxonMobil -> invests_in -> carbon capture`
 - `p011`: `Banks -> finances -> renewable energy projects`
@@ -65,7 +67,8 @@ Examples of bad, missing, or ambiguous edges:
 Broadly, the pilot suggests:
 
 - Reified and nested outputs are already informative.
-- Direct binary edges are useful when rules are precise.
+- Direct binary edges are useful when rules are precise; real FrameBase may still leave plausible
+  sentences ambiguous or unmatched.
 - Coverage gaps are driven more by frame/rule availability than by graph export itself.
 - Ambiguity handling is conservative, which is good for auditability but lowers direct-edge yield.
 

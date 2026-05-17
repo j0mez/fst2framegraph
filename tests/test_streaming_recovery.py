@@ -522,6 +522,51 @@ def test_dedupe_runs_identical_text_once_and_expands_outputs(tmp_path: Path) -> 
     assert not list((tmp_path / "run").rglob("*.pickle"))
 
 
+def test_dedupe_expansion_preserves_graph_provenance(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "sentence_id": ["s1", "s2"],
+            "doc_id": ["d1", "d2"],
+            "sentence": ["Technology can reduce emissions.", "Technology can reduce emissions."],
+        }
+    )
+    run_dir = tmp_path / "run"
+    graph_dir = tmp_path / "graph"
+
+    encode_with_fst(
+        fst=FakeFST(),
+        data=df,
+        sentence_id_col="sentence_id",
+        doc_col="doc_id",
+        out_dir=run_dir,
+        resume=False,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build",
+            "--input",
+            str(run_dir),
+            "--out",
+            str(graph_dir),
+            "--no-rdf",
+            "--no-graphml",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    frames = pd.read_csv(graph_dir / "frame_instances.csv")
+    assert set(frames["sentence_id"]) == {"sent_s1", "sent_s2"}
+    assert set(frames["document_id"]) == {"doc_d1", "doc_d2"}
+    assert frames["frame_instance_id"].nunique() == 2
+
+    edges = pd.read_csv(graph_dir / "graph_edges_reified.csv")
+    fe_edges = edges[edges["edge_type"] == "frame_element"]
+    assert set(fe_edges["sentence_id"]) == {"sent_s1", "sent_s2"}
+    assert set(fe_edges["document_id"]) == {"doc_d1", "doc_d2"}
+
+
 def test_no_dedupe_preserves_one_fst_call_per_row(tmp_path: Path) -> None:
     df = pd.DataFrame(
         {

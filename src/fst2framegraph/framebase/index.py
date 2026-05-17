@@ -660,6 +660,7 @@ def inspect_rule_candidates(
         if normalise_match_text(rule.object_fe_name or "") != object_norm:
             continue
         rule_target = normalise_match_text(rule.target_lemma_or_lu or rule.microframe_name or "")
+        target_matches = bool(target_norm and rule_target == target_norm)
         candidates.append(
             {
                 "rule_id": rule.rule_id,
@@ -670,7 +671,17 @@ def inspect_rule_candidates(
                 "object_fe_name": rule.object_fe_name,
                 "dbp_predicate_iri": rule.dbp_predicate_iri,
                 "dbp_predicate_name": rule.dbp_predicate_name,
-                "target_matches": bool(target_norm and rule_target == target_norm),
+                "target_matches": target_matches,
+                "target_match_reason": (
+                    f"target_text normalises to {target_norm!r} and matches this rule"
+                    if target_matches
+                    else (
+                        "no target_text was supplied; pass parser target text to disambiguate "
+                        "microframe-specific rules"
+                        if not target_norm
+                        else f"rule target normalises to {rule_target!r}, not {target_norm!r}"
+                    )
+                ),
             }
         )
 
@@ -681,6 +692,33 @@ def inspect_rule_candidates(
             str(item["dbp_predicate_name"] or ""),
         )
     )
+    target_match_count = sum(1 for item in candidates if item["target_matches"])
+    if not candidates:
+        resolution = "no_candidates"
+        message = "No FrameBase rule candidates use this frame/FE pair."
+        next_action = "Check the frame and FE names, or inspect a broader FE pair from the parser output."
+    elif not target_norm:
+        resolution = "target_not_supplied"
+        message = (
+            "Candidate rules exist, but no target_text was supplied, so lexical microframes "
+            "cannot be disambiguated."
+        )
+        next_action = "Rerun with --target-text from the parser target column."
+    elif target_match_count == 1:
+        resolution = "unique_target_match"
+        message = "Exactly one candidate rule matches the supplied target text."
+        next_action = "A graph build should emit one official DBP edge if the same FE fillers are present."
+    elif target_match_count > 1:
+        resolution = "ambiguous_target_match"
+        message = "Multiple candidate rules match the supplied target text; no edge should be guessed."
+        next_action = "Inspect the microframes/DBP predicates and narrow the input or rule inventory."
+    else:
+        resolution = "no_target_match"
+        message = "Candidate rules exist for the FE pair, but none match the supplied target text."
+        next_action = (
+            "Use one of the listed target lemmas only if the parser really detected that lexical target; "
+            "otherwise treat this as unmatched/ambiguous."
+        )
     return {
         "index_path": str(index_path),
         "frame_name": frame_name,
@@ -688,6 +726,10 @@ def inspect_rule_candidates(
         "object_fe": object_fe,
         "target_text": target_text,
         "candidate_count": len(candidates),
+        "target_match_count": target_match_count,
+        "resolution": resolution,
+        "message": message,
+        "suggested_next_action": next_action,
         "candidates": candidates[: max(limit, 0)],
     }
 

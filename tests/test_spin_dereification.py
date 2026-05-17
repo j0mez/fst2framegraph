@@ -505,7 +505,12 @@ def test_inspect_rule_candidates_returns_matching_rules(tmp_path: Path) -> None:
     )
 
     assert payload["candidate_count"] == 2
+    assert payload["target_match_count"] == 1
+    assert payload["resolution"] == "unique_target_match"
+    assert "official DBP edge" in payload["suggested_next_action"]
     assert payload["candidates"][0]["target_matches"] is True
+    assert "matches this rule" in payload["candidates"][0]["target_match_reason"]
+    assert "not 'can'" in payload["candidates"][1]["target_match_reason"]
 
 
 def test_build_framebase_index_uses_atomic_write(tmp_path: Path, monkeypatch) -> None:
