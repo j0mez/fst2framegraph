@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fst2framegraph.framebase.download import find_framebase_files, sha256_file
 from fst2framegraph.framebase.load_dbp_labels import load_dbp_labels
 from fst2framegraph.framebase.load_schema import FrameBaseSchema
 from fst2framegraph.framebase.parse_dered_rules import parse_dered_rules
 from fst2framegraph.framebase.parse_spin_rules import parse_spin_dereification_rules
+from fst2framegraph.framebase.rule_index import normalise_match_text
 from fst2framegraph.schema import FrameBaseRule
 
 
@@ -194,12 +197,15 @@ def _frame_name_from_iri(frame_iri: str | None) -> str | None:
 def _load_rules(
     path: Path | None,
     labels: dict[str, str],
+    *,
+    spin_limit: int | None = None,
+    progress: Callable[[dict[str, int | float | str]], None] | None = None,
 ) -> tuple[list[FrameBaseRule], str | None]:
     if path is None:
         return [], None
     lower_name = path.name.lower()
     if "spin" in lower_name or lower_name.endswith(".ttl") or lower_name.endswith(".ttl.gz"):
-        return list(parse_spin_dereification_rules(path, labels)), "spin"
+        return list(parse_spin_dereification_rules(path, labels, limit=spin_limit, progress=progress)), "spin"
     return parse_dered_rules(path, labels), "sparql"
 
 
@@ -260,6 +266,8 @@ def build_framebase_index(
     framebase_core: str | Path | None = None,
     dbp_labels: str | Path | None = None,
     dered_rules: str | Path | None = None,
+    spin_limit: int | None = None,
+    progress: Callable[[dict[str, int | float | str]], None] | None = None,
 ) -> dict[str, Any]:
     framebase_dir = Path(framebase_dir)
     index_path = Path(index_path) if index_path else default_framebase_index_path(framebase_dir)
@@ -286,10 +294,12 @@ def build_framebase_index(
         )
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    if overwrite and index_path.exists():
-        index_path.unlink()
+    temp_index_path = index_path.with_name(f"{index_path.name}.tmp-{os.getpid()}-{int(time.time())}")
+    if temp_index_path.exists():
+        temp_index_path.unlink()
 
-    conn = _connect(index_path)
+    start_time = time.monotonic()
+    conn = _connect(temp_index_path)
     statuses: dict[str, tuple[str, str | None]] = {}
     warnings: list[str] = []
     try:
@@ -328,7 +338,28 @@ def build_framebase_index(
             statuses["dbp_labels"] = ("missing", warning)
             warnings.append(warning)
 
-        rules, rules_source_format = _load_rules(rules_path, labels)
+        spin_progress: dict[str, int | float | str] = {
+            "phase": "spin-init",
+            "lines_processed": 0,
+            "construct_nodes_seen": 0,
+            "candidate_rules_extracted": 0,
+            "valid_rules_inserted": 0,
+            "parse_warnings": 0,
+            "parse_errors": 0,
+            "elapsed_seconds": 0.0,
+        }
+
+        def _progress(payload: dict[str, int | float | str]) -> None:
+            spin_progress.update(payload)
+            if progress is not None:
+                progress(dict(spin_progress))
+
+        rules, rules_source_format = _load_rules(
+            rules_path,
+            labels,
+            spin_limit=spin_limit,
+            progress=_progress,
+        )
         parsed_rules = 0
         parse_errors = 0
         parse_warnings = 0
@@ -396,6 +427,10 @@ def build_framebase_index(
                     parse_errors += 1
                 if rule.parse_warning:
                     parse_warnings += 1
+                spin_progress["candidate_rules_extracted"] = parsed_rules + parse_errors
+                spin_progress["valid_rules_inserted"] = parsed_rules
+                spin_progress["parse_warnings"] = parse_warnings
+                spin_progress["parse_errors"] = parse_errors
             manifest_key = "dereification_rules_spin" if rules_source_format == "spin" else "dereification_rules_sparql"
             if parsed_rules:
                 statuses[manifest_key] = ("indexed", None)
@@ -407,19 +442,25 @@ def build_framebase_index(
             statuses.setdefault(other_key, ("missing", None))
 
         cluster_files_loaded = False
+        cluster_rows = 0
+        cluster_pair_rows = 0
+        lexical_cluster_rows = 0
         if found.get("clusters") and found["clusters"] is not None:
             for row in _parse_clusters_txt(found["clusters"]):
                 conn.execute("INSERT INTO clusters VALUES (?, ?, ?, ?)", row)
+                cluster_rows += 1
             statuses["clusters"] = ("indexed", None)
             cluster_files_loaded = True
         if found.get("cluster_pairs") and found["cluster_pairs"] is not None:
             for row in _parse_cluster_pairs(found["cluster_pairs"]):
                 conn.execute("INSERT INTO cluster_pairs VALUES (?, ?)", row)
+                cluster_pair_rows += 1
             statuses["cluster_pairs"] = ("indexed", None)
             cluster_files_loaded = True
         if found.get("lexical_clusters") and found["lexical_clusters"] is not None:
             for row in _parse_lexical_clusters(found["lexical_clusters"]):
                 conn.execute("INSERT INTO lexical_clusters VALUES (?, ?, ?)", row)
+                lexical_cluster_rows += 1
             statuses["lexical_clusters"] = ("indexed", None)
             cluster_files_loaded = True
         for optional_key in (
@@ -444,6 +485,13 @@ def build_framebase_index(
         }
         _insert_manifest(conn, paths=paths, statuses=statuses)
 
+        conn.commit()
+        if overwrite and index_path.exists():
+            index_path.unlink()
+        temp_index_path.replace(index_path)
+
+        elapsed_seconds = round(time.monotonic() - start_time, 2)
+        index_size_bytes = index_path.stat().st_size if index_path.exists() else 0
         metadata = {
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "framebase_dir": str(framebase_dir),
@@ -458,11 +506,24 @@ def build_framebase_index(
             "dereification_rules_parse_errors": parse_errors,
             "dereification_rules_parse_warnings": parse_warnings,
             "cluster_files_loaded": cluster_files_loaded,
+            "cluster_rows_loaded": cluster_rows,
+            "cluster_pair_rows_loaded": cluster_pair_rows,
+            "lexical_cluster_rows_loaded": lexical_cluster_rows,
             "dbp_schema_loaded": labels_path is not None,
             "core_schema_loaded": core_path is not None,
+            "spin_limit": spin_limit,
+            "spin_lines_processed": spin_progress.get("lines_processed", 0),
+            "spin_construct_nodes_seen": spin_progress.get("construct_nodes_seen", 0),
+            "spin_candidate_rules_extracted": spin_progress.get("candidate_rules_extracted", 0),
+            "elapsed_seconds": elapsed_seconds,
+            "index_size_bytes": index_size_bytes,
         }
-        _write_metadata(conn, metadata)
-        conn.commit()
+        post_conn = _connect(index_path)
+        try:
+            _write_metadata(post_conn, metadata)
+            post_conn.commit()
+        finally:
+            post_conn.close()
 
         return {
             "index_path": str(index_path),
@@ -470,6 +531,9 @@ def build_framebase_index(
             **metadata,
             "warnings": warnings,
         }
+    except Exception:
+        temp_index_path.unlink(missing_ok=True)
+        raise
     finally:
         conn.close()
 
@@ -570,6 +634,62 @@ def load_rules_from_index(index_path: str | Path) -> list[FrameBaseRule]:
             ]
     finally:
         conn.close()
+
+
+def inspect_rule_candidates(
+    index_path: str | Path,
+    *,
+    frame_name: str,
+    subject_fe: str,
+    object_fe: str,
+    target_text: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    rules = load_rules_from_index(index_path)
+    frame_norm = normalise_match_text(frame_name)
+    subject_norm = normalise_match_text(subject_fe)
+    object_norm = normalise_match_text(object_fe)
+    target_norm = normalise_match_text(target_text or "")
+
+    candidates = []
+    for rule in rules:
+        if normalise_match_text(rule.frame_name or "") != frame_norm:
+            continue
+        if normalise_match_text(rule.subject_fe_name or "") != subject_norm:
+            continue
+        if normalise_match_text(rule.object_fe_name or "") != object_norm:
+            continue
+        rule_target = normalise_match_text(rule.target_lemma_or_lu or rule.microframe_name or "")
+        candidates.append(
+            {
+                "rule_id": rule.rule_id,
+                "frame_name": rule.frame_name,
+                "microframe_name": rule.microframe_name,
+                "target_lemma_or_lu": rule.target_lemma_or_lu,
+                "subject_fe_name": rule.subject_fe_name,
+                "object_fe_name": rule.object_fe_name,
+                "dbp_predicate_iri": rule.dbp_predicate_iri,
+                "dbp_predicate_name": rule.dbp_predicate_name,
+                "target_matches": bool(target_norm and rule_target == target_norm),
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: (
+            not item["target_matches"],
+            str(item["target_lemma_or_lu"] or ""),
+            str(item["dbp_predicate_name"] or ""),
+        )
+    )
+    return {
+        "index_path": str(index_path),
+        "frame_name": frame_name,
+        "subject_fe": subject_fe,
+        "object_fe": object_fe,
+        "target_text": target_text,
+        "candidate_count": len(candidates),
+        "candidates": candidates[: max(limit, 0)],
+    }
 
 
 def setup_framebase(

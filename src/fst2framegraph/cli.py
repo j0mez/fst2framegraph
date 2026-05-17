@@ -15,6 +15,7 @@ from fst2framegraph.framebase.download import (
 from fst2framegraph.framebase.index import (
     build_framebase_index as build_framebase_index_file,
     find_framebase_index,
+    inspect_rule_candidates,
     load_dbp_labels_from_index,
     load_rules_from_index,
     load_schema_from_index,
@@ -458,8 +459,25 @@ def build_framebase_index_command(
         None,
         help="FrameBase dereification rules, SPARQL zip or text.",
     ),
+    spin_limit: Optional[int] = typer.Option(
+        None,
+        "--spin-limit",
+        help="Optional limit for SPIN rules parsed during indexing; useful for small probes.",
+    ),
 ) -> None:
     """Build the compact FrameBase SQLite index used by normal graph builds."""
+    def _progress(payload: dict[str, object]) -> None:
+        console.print(
+            "[cyan]"
+            f"{payload.get('phase', 'spin')}[/cyan] "
+            f"lines={payload.get('lines_processed', 0)} "
+            f"constructs={payload.get('construct_nodes_seen', 0)} "
+            f"candidates={payload.get('candidate_rules_extracted', 0)} "
+            f"valid={payload.get('valid_rules_inserted', 0)} "
+            f"warnings={payload.get('parse_warnings', 0)} "
+            f"errors={payload.get('parse_errors', 0)}"
+        )
+
     try:
         report = build_framebase_index_file(
             framebase_dir=framebase_dir,
@@ -468,6 +486,8 @@ def build_framebase_index_command(
             framebase_core=framebase_core,
             dbp_labels=dbp_labels,
             dered_rules=dered_rules,
+            spin_limit=spin_limit,
+            progress=_progress,
         )
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1185,12 +1205,36 @@ def run_workflow(
 def framebase_status(
     framebase_dir: Path = typer.Option(Path("data/framebase"), "--framebase-dir", help="FrameBase directory."),
     write_manifest: bool = typer.Option(False, "--write-manifest", help="Write checksum manifest for existing files."),
+    framebase_index: Optional[Path] = typer.Option(None, "--framebase-index", help="Optional SQLite index to inspect."),
+    frame_name: Optional[str] = typer.Option(None, "--frame-name", help="Optional frame name for rule-candidate inspection."),
+    subject_fe: Optional[str] = typer.Option(None, "--subject-fe", help="Optional subject FE name for rule-candidate inspection."),
+    object_fe: Optional[str] = typer.Option(None, "--object-fe", help="Optional object FE name for rule-candidate inspection."),
+    target_text: Optional[str] = typer.Option(None, "--target-text", help="Optional target text for rule-candidate inspection."),
+    limit: int = typer.Option(20, "--limit", help="Maximum candidate rules to print for inspection."),
 ) -> None:
     found = find_framebase_files(framebase_dir)
     console.print_json(data={k: str(v) if v else None for k, v in found.items()})
     if write_manifest:
         manifest = write_framebase_manifest(framebase_dir)
         console.print_json(data=manifest)
+    if any(value is not None for value in [frame_name, subject_fe, object_fe]):
+        if not all([frame_name, subject_fe, object_fe]):
+            console.print("[red]Provide --frame-name, --subject-fe, and --object-fe together.[/red]")
+            raise typer.Exit(1)
+        index = framebase_index or find_framebase_index(framebase_dir)
+        if index is None:
+            console.print("[red]No FrameBase index found. Build one first or pass --framebase-index.[/red]")
+            raise typer.Exit(1)
+        console.print_json(
+            data=inspect_rule_candidates(
+                index,
+                frame_name=frame_name,
+                subject_fe=subject_fe,
+                object_fe=object_fe,
+                target_text=target_text,
+                limit=limit,
+            )
+        )
 
 
 @app.command("materialise")
