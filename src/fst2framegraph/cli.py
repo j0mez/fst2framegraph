@@ -997,7 +997,7 @@ def run_workflow(
         "--dedupe-normalise",
         help="Text dedupe mode for raw input: exact or normalised.",
     ),
-    plan: bool = typer.Option(False, "--dry-run", "--plan", help="Inspect and print planned actions without writing files."),
+    plan: bool = typer.Option(False, "--plan", "--dry-run", help="Inspect and print planned actions without writing files."),
     yes: bool = typer.Option(False, "--yes", help="Skip non-risky confirmations."),
     interactive: bool = typer.Option(False, "--interactive", help="Ask guided questions when helpful."),
 ) -> None:
