@@ -152,7 +152,7 @@ def _run_command(
     device: str = "auto",
     dedupe: bool = True,
     dedupe_normalise: str = "exact",
-    chunk_transcripts: bool = True,
+    chunk_text: bool = True,
     chunk_min_words: int = 2,
     chunk_max_words: int = 70,
     plan: bool = False,
@@ -188,8 +188,8 @@ def _run_command(
         parts.append("--no-dedupe")
     if dedupe_normalise != "exact":
         parts.extend(["--dedupe-normalise", dedupe_normalise])
-    if not chunk_transcripts:
-        parts.append("--no-chunk-transcripts")
+    if not chunk_text:
+        parts.append("--no-chunk-text")
     if chunk_min_words != 2:
         parts.extend(["--chunk-min-words", str(chunk_min_words)])
     if chunk_max_words != 70:
@@ -255,7 +255,7 @@ def _looks_like_raw_text_table(path: Path, text_col: str) -> bool:
     return not has_graph_columns and not has_flat_columns
 
 
-def _clean_transcript_text(text: object) -> str:
+def _clean_input_text(text: object) -> str:
     value = "" if text is None else str(text)
     if not value:
         return ""
@@ -277,7 +277,7 @@ def _stable_chunk_hash(text: str) -> str:
 
 
 def _split_into_chunks(text: str, *, min_words: int, max_words: int) -> list[str]:
-    text = _clean_transcript_text(text)
+    text = _clean_input_text(text)
     if not text:
         return []
 
@@ -336,7 +336,7 @@ def _build_chunked_sentence_table(
     source = pd.read_csv(input_path)
     for required in [text_col]:
         if required not in source.columns:
-            raise ValueError(f"Missing required column for transcript chunking: {required}")
+            raise ValueError(f"Missing required column for text chunking: {required}")
 
     rows: list[dict[str, object]] = []
     mapping_rows: list[dict[str, object]] = []
@@ -416,7 +416,7 @@ def _print_run_plan(
     device: str,
     dedupe: bool,
     dedupe_normalise: str,
-    chunk_transcripts: bool,
+    chunk_text: bool,
     chunk_min_words: int,
     chunk_max_words: int,
 ) -> None:
@@ -427,10 +427,10 @@ def _print_run_plan(
             [
                 f"run FrameSemanticTransformer into canonical run directory: {out}",
                 (
-                    f"chunk transcript rows into sentence-like chunks "
+                    f"chunk long text rows into sentence-like chunks "
                     f"({chunk_min_words}-{chunk_max_words} words)"
-                    if chunk_transcripts
-                    else "do not split transcript rows into chunks"
+                    if chunk_text
+                    else "do not split text rows into chunks"
                 ),
                 "dedupe identical input texts before FST inference" if dedupe else "run FST once per input row",
                 "materialise CSV/report outputs",
@@ -486,7 +486,7 @@ def _print_run_plan(
             device=device,
             dedupe=dedupe,
             dedupe_normalise=dedupe_normalise,
-            chunk_transcripts=chunk_transcripts,
+            chunk_text=chunk_text,
             chunk_min_words=chunk_min_words,
             chunk_max_words=chunk_max_words,
         )
@@ -1148,20 +1148,20 @@ def run_workflow(
         "--dedupe-normalise",
         help="Text dedupe mode for raw input: exact or normalised.",
     ),
-    chunk_transcripts: bool = typer.Option(
+    chunk_text: bool = typer.Option(
         True,
-        "--chunk-transcripts/--no-chunk-transcripts",
-        help="Split transcript-like rows into sentence chunks before FST.",
+        "--chunk-text/--no-chunk-text",
+        help="Split long text rows into sentence-like chunks before FST.",
     ),
     chunk_min_words: int = typer.Option(
         2,
         "--chunk-min-words",
-        help="Minimum words per generated transcript chunk.",
+        help="Minimum words per generated text chunk.",
     ),
     chunk_max_words: int = typer.Option(
         70,
         "--chunk-max-words",
-        help="Maximum words per generated transcript chunk.",
+        help="Maximum words per generated text chunk.",
     ),
     plan: bool = typer.Option(False, "--plan", "--dry-run", help="Inspect and print planned actions without writing files."),
     yes: bool = typer.Option(False, "--yes", help="Skip non-risky confirmations."),
@@ -1197,7 +1197,7 @@ def run_workflow(
             device=device,
             dedupe=dedupe,
             dedupe_normalise=dedupe_normalise,
-            chunk_transcripts=chunk_transcripts,
+            chunk_text=chunk_text,
             chunk_min_words=chunk_min_words,
             chunk_max_words=chunk_max_words,
         )
@@ -1289,7 +1289,7 @@ def run_workflow(
             parse_text_col = text_col
             parse_id_col = id_col
             parse_doc_col = doc_col
-            if chunk_transcripts:
+            if chunk_text:
                 source_rows = pd.read_csv(input)
                 chunk_df, chunk_map_df = _build_chunked_sentence_table(
                     input_path=input,
@@ -1300,10 +1300,10 @@ def run_workflow(
                     max_chunk_words=chunk_max_words,
                 )
                 if len(chunk_df) == 0:
-                    raise ValueError("No transcript chunks were produced from input.")
+                    raise ValueError("No text chunks were produced from input.")
                 out.mkdir(parents=True, exist_ok=True)
-                chunk_df.to_csv(out / "transcript_chunks.csv", index=False)
-                chunk_map_df.to_csv(out / "transcript_chunk_mapping.csv", index=False)
+                chunk_df.to_csv(out / "text_chunks.csv", index=False)
+                chunk_map_df.to_csv(out / "text_chunk_mapping.csv", index=False)
                 parse_data = chunk_df
                 parse_text_col = "sentence"
                 parse_id_col = "sentence_id"
@@ -1315,8 +1315,8 @@ def run_workflow(
                     "mapping_rows": int(len(chunk_map_df)),
                     "chunk_min_words": chunk_min_words,
                     "chunk_max_words": chunk_max_words,
-                    "chunk_table": str(out / "transcript_chunks.csv"),
-                    "chunk_mapping_table": str(out / "transcript_chunk_mapping.csv"),
+                    "chunk_table": str(out / "text_chunks.csv"),
+                    "chunk_mapping_table": str(out / "text_chunk_mapping.csv"),
                 }
 
             report = encode_with_fst(
