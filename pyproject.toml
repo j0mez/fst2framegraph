@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fst2framegraph"
-version = "0.3.1"
+version = "0.3.2"
 description = "Convert FrameNet-style parser output into FrameBase-compatible reified, nested and dereified semantic graphs."
 readme = "README.md"
 requires-python = ">=3.10"

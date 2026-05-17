@@ -175,9 +175,9 @@ def _inspect_run_dir(path: Path, files: list[Path]) -> dict[str, Any] | None:
     }
 
 
-def _inspect_pickles(paths: list[Path]) -> dict[str, Any]:
+def _inspect_pickles(paths: list[Path], *, is_directory: bool = False) -> dict[str, Any]:
     return {
-        "detected_format": "pickle_folder" if len(paths) > 1 else "pickle_file",
+        "detected_format": "pickle_folder" if is_directory or len(paths) > 1 else "pickle_file",
         "status": "unsafe_without_pickle_permission",
         "graph_ready": False,
         "convertible": False,
@@ -208,7 +208,7 @@ def inspect_fst_outputs(path: str | Path, *, recursive: bool = True) -> dict[str
             run_report.update({"files_scanned": len(files)})
             return run_report
         if pickle_files:
-            report = _inspect_pickles(pickle_files)
+            report = _inspect_pickles(pickle_files, is_directory=True)
             report["files_scanned"] = len(files)
             return report
         csvs = [p for p in files if p.suffix.lower() == ".csv"]
@@ -513,10 +513,17 @@ def doctor_run(
     framebase_index: str | Path | None = None,
 ) -> dict[str, Any]:
     checks = []
+    next_commands: list[str] = []
     ok = True
     if run_dir is not None:
         report = inspect_fst_outputs(run_dir)
-        checks.append({"target": str(run_dir), **report})
+        run_next = _doctor_run_next_commands(
+            Path(run_dir),
+            report,
+            framebase_index=Path(framebase_index) if framebase_index else None,
+        )
+        checks.append({"target": str(run_dir), **report, "next_commands": run_next})
+        next_commands.extend(run_next)
         ok = ok and report["status"] in {"ready", "rebuildable", "graph_ready"}
     if framebase_index is not None:
         index_path = Path(framebase_index)
@@ -535,10 +542,61 @@ def doctor_run(
                 }
             index_report["status"] = "ready" if counts["frames"] and counts["frame_elements"] else "incomplete"
             index_report["counts"] = counts
+            if index_report["status"] != "ready":
+                index_report["next_commands"] = [_framebase_index_next_command(index_path)]
         else:
             index_report["warnings"].append("FrameBase index does not exist.")
+            index_report["next_commands"] = [_framebase_index_next_command(index_path)]
         checks.append(index_report)
+        next_commands.extend(index_report.get("next_commands", []))
         ok = ok and index_report["status"] == "ready"
     if not checks:
         raise ValueError("doctor requires --run-dir, --framebase-index, or both.")
-    return {"ok": ok, "checks": checks}
+    return {"ok": ok, "checks": checks, "next_commands": list(dict.fromkeys(next_commands))}
+
+
+def _doctor_run_next_commands(
+    path: Path,
+    report: Mapping[str, Any],
+    *,
+    framebase_index: Path | None = None,
+) -> list[str]:
+    status = report.get("status")
+    detected = report.get("detected_format")
+    index = str(framebase_index) if framebase_index else "PATH/framebase_index.sqlite"
+    if status == "rebuildable":
+        return [f"fst2framegraph materialise --run-dir {path}"]
+    if detected == "v0.3_run_directory" and report.get("graph_ready"):
+        return [
+            "fst2framegraph build "
+            f"--input {path} "
+            "--out graph_output "
+            f"--framebase-index {index}"
+        ]
+    if report.get("flat_only"):
+        return [
+            "fst2framegraph detect "
+            "--input sentences.csv "
+            "--text-col sentence "
+            "--id-col sentence_id "
+            "--doc-col doc_id "
+            "--out fst_clean "
+            "--resume"
+        ]
+    if status == "unsafe_without_pickle_permission":
+        return [
+            "fst2framegraph prepare "
+            f"--input {path} "
+            "--out fst_clean "
+            "--allow-pickle"
+        ]
+    return [f"fst2framegraph inspect --input {path}"]
+
+
+def _framebase_index_next_command(index_path: Path) -> str:
+    framebase_dir = index_path.parent
+    return (
+        "fst2framegraph build-framebase-index "
+        f"--framebase-dir {framebase_dir} "
+        f"--index {index_path}"
+    )
