@@ -817,10 +817,15 @@ def detect(
 def inspect_outputs(
     input: Path = typer.Option(..., "--input", help="FST output file or directory to inspect."),
     recursive: bool = typer.Option(True, "--recursive/--no-recursive", help="Scan directories recursively."),
+    allow_pickle: bool = typer.Option(
+        False,
+        "--allow-pickle",
+        help="Allow inspecting trusted Python pickle files. Pickles can execute code.",
+    ),
 ) -> None:
     """Inspect existing FST outputs and report whether they are graph-ready or convertible."""
     try:
-        report = inspect_fst_outputs(input, recursive=recursive)
+        report = inspect_fst_outputs(input, recursive=recursive, allow_pickle=allow_pickle)
     except Exception as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
