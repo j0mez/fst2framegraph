@@ -46,6 +46,14 @@ class FakeFST:
         )
 
 
+class SyntheticSetstateKeyError:
+    def __init__(self) -> None:
+        self.frames = []
+
+    def __getattr__(self, name: str):
+        raise KeyError(name)
+
+
 def graph_ready_rows() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -209,6 +217,64 @@ def test_convert_trusted_fake_pickle_when_allowed(tmp_path: Path) -> None:
     elements = pd.read_csv(tmp_path / "clean" / "frame_elements_long.csv")
     assert elements.loc[0, "element_name"] == "Entity"
     assert not list((tmp_path / "clean").rglob("*.pkl"))
+
+
+def test_synthetic_legacy_getattr_reproduces_pickle_setstate_keyerror() -> None:
+    payload = pickle.dumps(SyntheticSetstateKeyError())
+
+    with pytest.raises(KeyError, match="__setstate__"):
+        pickle.loads(payload)
+
+
+def test_inspect_and_convert_trusted_legacy_nltk_framenet_pickle(tmp_path: Path) -> None:
+    framenet = pytest.importorskip("nltk.corpus.reader.framenet")
+    pickle_path = tmp_path / "legacy_raw_results.pkl"
+    sentence = "Technology can reduce emissions."
+    payload = {
+        "batch_key": "batch-1",
+        "first_global_unique_row": 12944,
+        "last_global_unique_row": 12944,
+        "unique_chunk_ids": ["chunk-12944"],
+        "sentences": [sentence],
+        "errors": [None],
+        "raw_results": [
+            FakeResult(
+                sentence=sentence,
+                frames=[
+                    FakeFrame(
+                        name="Capability",
+                        trigger_location=11,
+                        frame_elements=[FakeFE(name="Entity", text="Technology")],
+                    )
+                ],
+            )
+        ],
+        "framenet_probe": framenet.PrettyDict({"name": "tiny"}),
+    }
+    pickle_path.write_bytes(pickle.dumps(payload))
+
+    inspect_result = CliRunner().invoke(
+        app, ["inspect", "--input", str(pickle_path), "--allow-pickle"]
+    )
+    assert inspect_result.exit_code == 0, inspect_result.output
+    assert '"status": "convertible"' in inspect_result.output
+    assert '"records": 1' in inspect_result.output
+
+    report = convert_fst_outputs(pickle_path, tmp_path / "clean", allow_pickle=True)
+
+    assert report["sentences"] == 1
+    elements = pd.read_csv(tmp_path / "clean" / "frame_elements_long.csv")
+    assert set(elements["sentence_id"]) == {"chunk-12944"}
+    assert elements.loc[0, "frame_name"] == "Capability"
+    assert elements.loc[0, "element_name"] == "Entity"
+
+
+def test_convert_trusted_pickle_reports_unsupported_structure(tmp_path: Path) -> None:
+    pickle_path = tmp_path / "unsupported.pkl"
+    pickle_path.write_bytes(pickle.dumps({"unexpected": "shape"}))
+
+    with pytest.raises(ValueError, match="Unsupported trusted pickle payload"):
+        convert_fst_outputs(pickle_path, tmp_path / "clean", allow_pickle=True)
 
 
 def test_convert_output_can_be_passed_to_build(tmp_path: Path) -> None:

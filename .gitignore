@@ -16,6 +16,7 @@ venv/
 
 # local outputs
 outputs/
+results_pickle_test/
 *.log
 *.sqlite
 *.ttl

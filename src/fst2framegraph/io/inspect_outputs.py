@@ -5,6 +5,7 @@ import pickle
 import re
 import sqlite3
 import shutil
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pandas as pd
 from fst2framegraph.fst.export import (
     FSTGraphWriter,
     _json_safe,
+    _make_error_record,
     _make_success_record,
     _plain,
     _stable_frame_instance_id,
@@ -39,6 +41,12 @@ GRAPH_READY_COLUMNS = [
 ]
 FLAT_COLUMNS = ["frame_name", "element_name", "element_filler"]
 PICKLE_RE = re.compile(r".*?(\d+)_to_(\d+).*?_raw_results\.p(?:ickle|kl)$")
+EXPECTED_PICKLE_SHAPES = (
+    "Expected one of: a list/tuple of FST result records; a mapping with 'records' or "
+    "'results'; a legacy batch mapping with 'raw_results' plus optional 'sentences', "
+    "'unique_chunk_ids', and 'errors'; or a single record with 'sentence' plus 'frames' "
+    "or 'result'."
+)
 
 
 def _scan_files(path: Path, recursive: bool = True) -> list[Path]:
@@ -175,8 +183,126 @@ def _inspect_run_dir(path: Path, files: list[Path]) -> dict[str, Any] | None:
     }
 
 
-def _inspect_pickles(paths: list[Path], *, is_directory: bool = False) -> dict[str, Any]:
-    return {
+@contextmanager
+def _legacy_nltk_framenet_pickle_compat() -> Iterable[None]:
+    """Allow trusted legacy NLTK FrameNet objects to unpickle.
+
+    Older NLTK FrameNet helper classes implement ``__getattr__`` by indexing into
+    dict-like state. During unpickling, Python probes for special attributes such
+    as ``__setstate__``; those classes raise ``KeyError`` instead of
+    ``AttributeError``, which aborts unpickling. Patch only inside explicit
+    trusted-pickle loading so normal code paths never load or mutate pickle
+    behavior by default.
+    """
+
+    try:
+        import nltk.corpus.reader.framenet as framenet  # type: ignore[import-untyped]
+    except Exception:
+        yield
+        return
+
+    originals: list[tuple[type, Any]] = []
+    for class_name in ("AttrDict", "PrettyDict", "Future"):
+        cls = getattr(framenet, class_name, None)
+        original = getattr(cls, "__getattr__", None)
+        if cls is None or original is None:
+            continue
+        originals.append((cls, original))
+
+        def safe_getattr(self: Any, name: str, _original: Any = original) -> Any:
+            if str(name).startswith("__"):
+                raise AttributeError(name)
+            try:
+                return _original(self, name)
+            except (AttributeError, KeyError, RecursionError) as exc:
+                raise AttributeError(name) from exc
+
+        cls.__getattr__ = safe_getattr
+
+    try:
+        yield
+    finally:
+        for cls, original in originals:
+            cls.__getattr__ = original
+
+
+def _safe_len(value: Any) -> int | None:
+    try:
+        return len(value)
+    except Exception:
+        return None
+
+
+def _type_name(value: Any) -> str:
+    cls = type(value)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _safe_getattr(value: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(value, name)
+    except Exception:
+        return default
+
+
+def _pickle_payload_summary(value: Any, *, depth: int = 0) -> dict[str, Any]:
+    summary: dict[str, Any] = {"type": _type_name(value)}
+    length = _safe_len(value)
+    if length is not None:
+        summary["length"] = length
+    if isinstance(value, Mapping):
+        keys = [str(key) for key in list(value.keys())[:20]]
+        summary["keys"] = keys
+        for key in (
+            "records",
+            "results",
+            "raw_results",
+            "sentences",
+            "unique_chunk_ids",
+            "errors",
+            "sentence",
+            "frames",
+            "result",
+        ):
+            if key in value:
+                item = value[key]
+                summary[f"{key}_type"] = _type_name(item)
+                item_len = _safe_len(item)
+                if item_len is not None:
+                    summary[f"{key}_length"] = item_len
+        return summary
+    if isinstance(value, list | tuple):
+        if value and depth < 1:
+            summary["first_item"] = _pickle_payload_summary(value[0], depth=depth + 1)
+        return summary
+    attrs = list(getattr(value, "__dict__", {}).keys())[:20]
+    if attrs:
+        summary["attrs"] = attrs
+    for attr in ("sentence", "sentence_id", "doc_id", "frames", "result"):
+        attr_value = _safe_getattr(value, attr, None)
+        if attr_value is not None:
+            summary[f"{attr}_type"] = _type_name(attr_value)
+            attr_len = _safe_len(attr_value)
+            if attr_len is not None:
+                summary[f"{attr}_length"] = attr_len
+    return summary
+
+
+def _unsupported_pickle_payload_error(payload: Any) -> ValueError:
+    return ValueError(
+        "Unsupported trusted pickle payload. "
+        f"Detected structure: {json.dumps(_pickle_payload_summary(payload), ensure_ascii=False)}. "
+        + EXPECTED_PICKLE_SHAPES
+    )
+
+
+def _inspect_pickles(
+    paths: list[Path],
+    *,
+    is_directory: bool = False,
+    allow_pickle: bool = False,
+) -> dict[str, Any]:
+    base = {
         "detected_format": "pickle_folder" if is_directory or len(paths) > 1 else "pickle_file",
         "status": "unsafe_without_pickle_permission",
         "graph_ready": False,
@@ -190,11 +316,52 @@ def _inspect_pickles(paths: list[Path], *, is_directory: bool = False) -> dict[s
         "counts": {"pickle_files": len(paths)},
         "pickle_files": [str(p) for p in paths],
         "missing_pickle_ranges": _pickle_ranges(paths),
-        "recommended_next_command": "fst2framegraph convert --input PATH --out fst_clean --allow-pickle",
+        "recommended_next_command": "fst2framegraph prepare --input PATH --out fst_clean --allow-pickle",
     }
+    if not allow_pickle:
+        return base
+
+    payloads = []
+    record_count = 0
+    warnings = []
+    for file in paths:
+        with _legacy_nltk_framenet_pickle_compat():
+            with file.open("rb") as f:
+                payload = pickle.load(f)
+            summary = _pickle_payload_summary(payload)
+            try:
+                records = _records_from_pickle_payload(payload, record_count)
+            except ValueError as exc:
+                warnings.append(f"{file}: {exc}")
+                records = []
+            record_count += len(records)
+            payloads.append({"path": str(file), "structure": summary, "records": len(records)})
+
+    convertible = not warnings
+    base.update(
+        {
+            "status": "convertible" if convertible else "unsupported_pickle_structure",
+            "convertible": convertible,
+            "unsafe_without_pickle_permission": False,
+            "warnings": warnings,
+            "counts": {"pickle_files": len(paths), "records": record_count},
+            "pickle_payloads": payloads,
+            "recommended_next_command": (
+                "fst2framegraph prepare --input PATH --out fst_clean --allow-pickle"
+                if convertible
+                else EXPECTED_PICKLE_SHAPES
+            ),
+        }
+    )
+    return base
 
 
-def inspect_fst_outputs(path: str | Path, *, recursive: bool = True) -> dict[str, Any]:
+def inspect_fst_outputs(
+    path: str | Path,
+    *,
+    recursive: bool = True,
+    allow_pickle: bool = False,
+) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Input path not found: {path}")
@@ -208,7 +375,11 @@ def inspect_fst_outputs(path: str | Path, *, recursive: bool = True) -> dict[str
             run_report.update({"files_scanned": len(files)})
             return run_report
         if pickle_files:
-            report = _inspect_pickles(pickle_files, is_directory=True)
+            report = _inspect_pickles(
+                pickle_files,
+                is_directory=True,
+                allow_pickle=allow_pickle,
+            )
             report["files_scanned"] = len(files)
             return report
         csvs = [p for p in files if p.suffix.lower() == ".csv"]
@@ -242,7 +413,7 @@ def inspect_fst_outputs(path: str | Path, *, recursive: bool = True) -> dict[str
     elif suffix in {".json", ".jsonl", ".ndjson"}:
         report = _inspect_json(path)
     elif suffix in {".pkl", ".pickle"}:
-        report = _inspect_pickles([path])
+        report = _inspect_pickles([path], allow_pickle=allow_pickle)
     else:
         report = {
             "detected_format": "unknown_file",
@@ -390,8 +561,83 @@ def _iter_pickle_payloads(path: Path, recursive: bool) -> Iterable[Any]:
         p for p in _scan_files(path, recursive=recursive) if p.suffix.lower() in {".pkl", ".pickle"}
     ]
     for file in files:
-        with file.open("rb") as f:
-            yield pickle.load(f)
+        with _legacy_nltk_framenet_pickle_compat():
+            with file.open("rb") as f:
+                payload = pickle.load(f)
+            yield payload
+
+
+def _mapping_looks_like_record(payload: Mapping[str, Any]) -> bool:
+    return "result" in payload or "frames" in payload or (
+        "sentence" in payload and ("frames" in payload or "result" in payload)
+    )
+
+
+def _object_looks_like_result(payload: Any) -> bool:
+    return _safe_getattr(payload, "frames", None) is not None
+
+
+def _records_from_legacy_raw_results_batch(
+    payload: Mapping[str, Any],
+    start_index: int,
+) -> list[dict[str, Any]]:
+    raw_results = payload.get("raw_results")
+    if not isinstance(raw_results, list | tuple):
+        raise _unsupported_pickle_payload_error(payload)
+
+    sentences = list(payload.get("sentences") or [])
+    sentence_ids = list(payload.get("unique_chunk_ids") or [])
+    errors = list(payload.get("errors") or [])
+    first_global = payload.get("first_global_unique_row")
+    batch_key = payload.get("batch_key")
+    records = []
+    for offset, result in enumerate(raw_results):
+        row_index = start_index + offset
+        sentence = str(
+            sentences[offset]
+            if offset < len(sentences)
+            else _safe_getattr(result, "sentence", "")
+        )
+        sentence_id = str(
+            sentence_ids[offset]
+            if offset < len(sentence_ids)
+            else _stable_sentence_id(sentence, row_index)
+        )
+        doc_id = sentence_id
+        metadata = {
+            "legacy_pickle_batch_key": batch_key,
+            "legacy_pickle_row_offset": offset,
+        }
+        if first_global is not None:
+            try:
+                metadata["legacy_pickle_global_unique_row"] = int(first_global) + offset
+            except Exception:
+                metadata["legacy_pickle_global_unique_row"] = first_global
+        error = errors[offset] if offset < len(errors) else None
+        if error is not None or result is None:
+            records.append(
+                _make_error_record(
+                    sentence=sentence,
+                    sentence_id=sentence_id,
+                    error=error or "Missing raw FST result in legacy pickle batch.",
+                    doc_id=doc_id,
+                    row_index=row_index,
+                    metadata=metadata,
+                )
+            )
+            continue
+        records.append(
+            _make_success_record(
+                result=result,
+                sentence=sentence or str(_safe_getattr(result, "sentence", "")),
+                sentence_id=sentence_id,
+                doc_id=doc_id,
+                row_index=row_index,
+                metadata=metadata,
+                allow_ambiguous_spans=False,
+            )
+        )
+    return records
 
 
 def _records_from_pickle_payload(payload: Any, start_index: int = 0) -> list[dict[str, Any]]:
@@ -400,16 +646,24 @@ def _records_from_pickle_payload(payload: Any, start_index: int = 0) -> list[dic
             return _records_from_pickle_payload(payload["records"], start_index)
         if "results" in payload:
             return _records_from_pickle_payload(payload["results"], start_index)
+        if "raw_results" in payload:
+            return _records_from_legacy_raw_results_batch(payload, start_index)
+        if not _mapping_looks_like_record(payload):
+            raise _unsupported_pickle_payload_error(payload)
         payloads = [payload]
     elif isinstance(payload, list | tuple):
         payloads = list(payload)
     else:
+        if not _object_looks_like_result(payload):
+            raise _unsupported_pickle_payload_error(payload)
         payloads = [payload]
 
     records = []
     for offset, item in enumerate(payloads):
         row_index = start_index + offset
         if isinstance(item, Mapping):
+            if not _mapping_looks_like_record(item):
+                raise _unsupported_pickle_payload_error(item)
             sentence = item.get("sentence") or getattr(item.get("result"), "sentence", "")
             sentence_id = item.get("sentence_id") or _stable_sentence_id(str(sentence), row_index)
             doc_id = item.get("doc_id") or item.get("document_id") or sentence_id
@@ -429,9 +683,13 @@ def _records_from_pickle_payload(payload: Any, start_index: int = 0) -> list[dic
             else:
                 records.append(_canonical_record_from_frames(item, row_index))
         else:
-            sentence = str(getattr(item, "sentence", ""))
-            sentence_id = str(getattr(item, "sentence_id", _stable_sentence_id(sentence, row_index)))
-            doc_id = str(getattr(item, "doc_id", sentence_id))
+            if not _object_looks_like_result(item):
+                raise _unsupported_pickle_payload_error(item)
+            sentence = str(_safe_getattr(item, "sentence", ""))
+            sentence_id = str(
+                _safe_getattr(item, "sentence_id", _stable_sentence_id(sentence, row_index))
+            )
+            doc_id = str(_safe_getattr(item, "doc_id", sentence_id))
             records.append(
                 _make_success_record(
                     result=item,
