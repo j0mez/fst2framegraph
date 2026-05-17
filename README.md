@@ -42,15 +42,20 @@ Python 3.10-3.12.
 
 ## Reusable FrameGraphBuilder API
 
-For downstream analysis code, use the stable graph construction layer directly:
+For downstream analysis code, use the stable graph construction and read-only analysis layer directly:
 
 ```python
-from fst2framegraph import FrameGraphBuilder, from_fst_output
+from fst2framegraph import AnalysisBase, FrameGraphBuilder, from_fst_output
 
 documents = from_fst_output("path/to/fst_output")
 builder = FrameGraphBuilder()
 graph = builder.build_graph(documents)
 builder.save_graph(graph, "my_graph.graphml")
+
+analysis = AnalysisBase(graph)
+agent_frames = analysis.frames_for_filler("we", role="Agent")
+paths = analysis.trace_paths("we", max_depth=2, role_filters=["Agent", "Goal"])
+assoc_df = analysis.agent_frame_lift(top_n_frames=20, top_n_agents=30)
 ```
 
 The graph schema is documented in `docs/graph_schema.md`. Fillers are globally
