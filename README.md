@@ -141,6 +141,8 @@ reproducible advanced workflows.
 
 The full FrameBase files are external data. They are not committed to this repository by default.
 FrameBase resources are downloaded or registered separately and remain under their own licence.
+By default, `setup-framebase` downloads from this project's GitHub Release assets
+for stability, with FrameBase upstream URLs as fallback.
 
 Download them into the local cache:
 

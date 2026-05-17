@@ -11,6 +11,9 @@ Download or register the files:
 fst2framegraph setup-framebase --out data/framebase
 ```
 
+Default download source is this repository's GitHub Release assets for reliability.
+If that source is unavailable, the downloader falls back to FrameBase upstream URLs.
+
 If the files are already present:
 
 ```bash

@@ -22,27 +22,42 @@ class FrameBaseDownload:
     key: str
     file_name: str
     url: str
+    fallback_urls: tuple[str, ...] = ()
     required: bool = True
     description: str = ""
+
+FRAMEBASE_RELEASE_TAG = "v0.4.0-alpha-framebase"
+FRAMEBASE_RELEASE_BASE = (
+    f"https://github.com/j0mez/fst2framegraph/releases/download/{FRAMEBASE_RELEASE_TAG}"
+)
 
 
 FRAMEBASE_DOWNLOADS: tuple[FrameBaseDownload, ...] = (
     FrameBaseDownload(
         key="core_schema",
         file_name="FrameBase_schema_core.ttl.gz",
-        url="https://www.framebase.org/files/data/dump/schema/FrameBase_schema_core.ttl.gz",
+        url=f"{FRAMEBASE_RELEASE_BASE}/FrameBase_schema_core.ttl.gz",
+        fallback_urls=(
+            "https://www.framebase.org/files/data/dump/schema/FrameBase_schema_core.ttl.gz",
+        ),
         description="FrameBase 2.0 core schema: reified frame/FE vocabulary.",
     ),
     FrameBaseDownload(
         key="dbp_labels",
         file_name="FrameBase_schema_dbps.ttl.gz",
-        url="https://www.framebase.org/files/data/dump/schema/FrameBase_schema_dbps.ttl.gz",
+        url=f"{FRAMEBASE_RELEASE_BASE}/FrameBase_schema_dbps.ttl.gz",
+        fallback_urls=(
+            "https://www.framebase.org/files/data/dump/schema/FrameBase_schema_dbps.ttl.gz",
+        ),
         description="FrameBase 2.0 labels for direct binary predicates.",
     ),
     FrameBaseDownload(
         key="dereification_rules_spin",
         file_name="dereificationRulesSpinFormat.ttl.gz",
-        url="https://www.framebase.org/files/data/dump/schema/dereificationRulesSpinFormat.ttl.gz",
+        url=f"{FRAMEBASE_RELEASE_BASE}/dereificationRulesSpinFormat.ttl.gz",
+        fallback_urls=(
+            "https://www.framebase.org/files/data/dump/schema/dereificationRulesSpinFormat.ttl.gz",
+        ),
         description="FrameBase 2.0 dereification rules as SPIN/Turtle.",
     ),
 )
@@ -74,6 +89,21 @@ def _download_url(url: str, path: Path, overwrite: bool = False, timeout: int = 
         if tmp.exists():
             tmp.unlink()
         raise DownloadError(f"Could not download {url}: {exc}") from exc
+
+
+def _download_with_fallbacks(item: FrameBaseDownload, path: Path, overwrite: bool = False, timeout: int = 60) -> str:
+    urls = (item.url,) + tuple(item.fallback_urls)
+    errors: list[str] = []
+    for url in urls:
+        try:
+            _download_url(url, path, overwrite=overwrite, timeout=timeout)
+            return url
+        except DownloadError as exc:
+            errors.append(str(exc))
+    joined = "\n".join(errors)
+    raise DownloadError(
+        f"Could not download {item.file_name} from any configured source.\n{joined}"
+    )
 
 
 def _basic_validate_file(path: Path) -> dict[str, object]:
@@ -138,9 +168,24 @@ def write_framebase_manifest(out_dir: Path, downloads: Iterable[FrameBaseDownloa
 
 def download_framebase_files(out_dir: Path, overwrite: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
+    selected_urls: dict[str, str] = {}
     for item in FRAMEBASE_DOWNLOADS:
-        _download_url(item.url, out_dir / item.file_name, overwrite=overwrite)
-    return write_framebase_manifest(out_dir)
+        selected_urls[item.key] = _download_with_fallbacks(
+            item,
+            out_dir / item.file_name,
+            overwrite=overwrite,
+        )
+    return write_framebase_manifest(out_dir, downloads=(
+        FrameBaseDownload(
+            key=item.key,
+            file_name=item.file_name,
+            url=selected_urls.get(item.key, item.url),
+            fallback_urls=item.fallback_urls,
+            required=item.required,
+            description=item.description,
+        )
+        for item in FRAMEBASE_DOWNLOADS
+    ))
 
 
 def default_framebase_dir() -> Path:
