@@ -222,7 +222,8 @@ def test_convert_trusted_fake_pickle_when_allowed(tmp_path: Path) -> None:
 def test_synthetic_legacy_getattr_reproduces_pickle_setstate_keyerror() -> None:
     payload = pickle.dumps(SyntheticSetstateKeyError())
 
-    with pytest.raises(KeyError, match="__setstate__"):
+    # Python minor versions can probe either __setstate__ or __getstate__ first.
+    with pytest.raises(KeyError, match="__setstate__|__getstate__"):
         pickle.loads(payload)
 
 
