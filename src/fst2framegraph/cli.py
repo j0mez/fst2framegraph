@@ -43,6 +43,7 @@ from fst2framegraph.io.inspect_outputs import (
 from fst2framegraph.io.read_fst import read_fst_csv
 from fst2framegraph.io.transcripts import clean_transcript
 from fst2framegraph.io.write_outputs import ensure_out_dir, write_csv, write_json, write_jsonl
+from fst2framegraph.pipeline_v2 import run_fst2graph
 from fst2framegraph.qc.ambiguity_report import repeated_frame_warnings
 from fst2framegraph.qc.coverage_report import make_qc_report
 from fst2framegraph.qc.validation import require_file
@@ -1408,6 +1409,79 @@ def run_workflow(
     console.print_json(data=result)
     if graph_report and graph_report.get("status") == "skipped":
         raise typer.Exit(1)
+
+
+@app.command("pipeline")
+def pipeline_v2(
+    input: Path = typer.Option(..., "--input", help="Input CSV path."),
+    out_root: Path = typer.Option(Path("outputs"), "--out-root", help="Root output directory."),
+    text_col: Optional[str] = typer.Option(None, "--text-col", help="Input text column name."),
+    id_col: Optional[str] = typer.Option(None, "--id-col", help="Input ID column name."),
+    doc_col: Optional[str] = typer.Option(None, "--doc-col", help="Input document ID column name."),
+    framebase_index: Optional[Path] = typer.Option(
+        None,
+        "--framebase-index",
+        help="Optional FrameBase index path.",
+    ),
+    framebase_dir: Optional[Path] = typer.Option(
+        None,
+        "--framebase-dir",
+        help="Optional FrameBase directory.",
+    ),
+    run_name: Optional[str] = typer.Option(None, "--run-name", help="Optional run directory name."),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume existing run state."),
+    batch_size: int = typer.Option(16, "--batch-size", help="FST batch size."),
+    dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Dedupe input texts."),
+    dedupe_normalise: str = typer.Option(
+        "exact",
+        "--dedupe-normalise",
+        help="Dedupe mode: exact or normalised.",
+    ),
+    checkpoint_every: int = typer.Option(100, "--checkpoint-every", help="Checkpoint interval."),
+    device: str = typer.Option("auto", "--device", help="FST device selection."),
+    chunk_text: bool = typer.Option(
+        True,
+        "--chunk-text/--no-chunk-text",
+        help="Chunk long input rows.",
+    ),
+    chunk_min_words: int = typer.Option(2, "--chunk-min-words", help="Minimum words per chunk."),
+    chunk_max_words: int = typer.Option(70, "--chunk-max-words", help="Maximum words per chunk."),
+    top_n_frames: int = typer.Option(20, "--top-n-frames", help="Top frame types to report."),
+    top_n_agents: int = typer.Option(30, "--top-n-agents", help="Top agent fillers to report."),
+    min_count: int = typer.Option(2, "--min-count", help="Minimum count for lift rows."),
+    n_communities: int = typer.Option(5, "--n-communities", help="Community detection limit."),
+    random_seed: int = typer.Option(42, "--random-seed", help="Deterministic random seed."),
+) -> None:
+    """One-call product workflow: preflight + extract + graph + analysis."""
+    try:
+        payload = run_fst2graph(
+            input_csv=input,
+            out_root=out_root,
+            text_col=text_col,
+            id_col=id_col,
+            doc_col=doc_col,
+            framebase_index=framebase_index,
+            framebase_dir=framebase_dir,
+            run_name=run_name,
+            resume=resume,
+            batch_size=batch_size,
+            dedupe=dedupe,
+            dedupe_normalise=dedupe_normalise,
+            checkpoint_every=checkpoint_every,
+            device=device,
+            chunk_text=chunk_text,
+            chunk_min_words=chunk_min_words,
+            chunk_max_words=chunk_max_words,
+            top_n_frames=top_n_frames,
+            top_n_agents=top_n_agents,
+            min_count=min_count,
+            n_communities=n_communities,
+            random_seed=random_seed,
+        )
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print_json(data=payload)
 
 
 @app.command("framebase-status")

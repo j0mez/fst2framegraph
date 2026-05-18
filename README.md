@@ -63,6 +63,32 @@ If `frame-semantic-transformer` is unavailable, the runner uses a small offline
 fallback backend for smoke tests and demos. Add `--require-real-fst` to fail
 instead of falling back.
 
+For resumable, chunked production runs, use the v2 one-call pipeline API or CLI:
+
+```bash
+fst2framegraph pipeline \
+  --input oxccal_sample.csv \
+  --text-col "Transcript (text and audio)" \
+  --id-col "Unique ID" \
+  --doc-col "Unique ID" \
+  --out-root outputs
+```
+
+```python
+from fst2framegraph import run_fst2graph
+
+result = run_fst2graph(
+    input_csv="oxccal_sample.csv",
+    text_col="Transcript (text and audio)",
+    id_col="Unique ID",
+    doc_col="Unique ID",
+)
+```
+
+The v2 path uses the same strict transcript cleaning and Colab install hints,
+while adding chunk mapping, resumable extraction state, GraphML/pickle graph
+outputs, analysis tables, and JSON/Markdown run summaries.
+
 ## Colab notebook
 
 Open `run_in_colab.ipynb` in a fresh Colab runtime, run the cells, upload the
