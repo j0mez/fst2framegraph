@@ -41,6 +41,7 @@ from fst2framegraph.io.inspect_outputs import (
     inspect_fst_outputs,
 )
 from fst2framegraph.io.read_fst import read_fst_csv
+from fst2framegraph.io.transcripts import clean_transcript
 from fst2framegraph.io.write_outputs import ensure_out_dir, write_csv, write_json, write_jsonl
 from fst2framegraph.qc.ambiguity_report import repeated_frame_warnings
 from fst2framegraph.qc.coverage_report import make_qc_report
@@ -256,12 +257,10 @@ def _looks_like_raw_text_table(path: Path, text_col: str) -> bool:
 
 
 def _clean_input_text(text: object) -> str:
-    value = "" if text is None else str(text)
+    value = clean_transcript(text)
     if not value:
         return ""
-    value = re.sub(r"\[ad text:\]|\[audio transcript:\]|\[video transcript:\]|\[text:\]|\[audio:\]", " ", value, flags=re.I)
     value = re.sub(r"https?://\S+|www\.\S+", " ", value)
-    value = value.replace("\r", "\n")
     value = re.sub(r"[ \t]+", " ", value)
     value = re.sub(r"\n{2,}", "\n", value)
     return value.strip()
@@ -688,8 +687,8 @@ def build(
     brand_col: Optional[str] = typer.Option(None, help="Optional brand/company column."),
     year_col: Optional[str] = typer.Option(None, help="Optional year column."),
     min_filler_len: int = typer.Option(1, help="Minimum filler length to keep."),
-    no_rdf: bool = typer.Option(False, help="Do not write Turtle/RDF output."),
-    no_graphml: bool = typer.Option(False, help="Do not write GraphML output."),
+    no_rdf: bool = typer.Option(False, "--no-rdf", help="Do not write Turtle/RDF output."),
+    no_graphml: bool = typer.Option(False, "--no-graphml", help="Do not write GraphML output."),
 ) -> None:
     try:
         input_csv = _resolve_build_input(input)

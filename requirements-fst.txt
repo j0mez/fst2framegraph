@@ -1,5 +1,9 @@
 -r requirements.txt
 # Upstream frame-semantic-transformer 0.10.0 pins older inference dependencies
-# that do not currently install cleanly on Python 3.12/macOS. Core graph,
-# materialise, inspect, and convert workflows do not require this stack.
-frame-semantic-transformer>=0.10.0; python_version < "3.12"
+# that do not currently resolve with sentencepiece==0.2.0 under Python 3.12.
+# Use scripts/install_colab_fst.py on Colab to install sentencepiece first,
+# install the rest of the runtime stack, then install FST with --no-deps.
+protobuf>=3.20.1,<4.0.0
+transformers>=4.39,<5
+torch>=2.2
+frame-semantic-transformer==0.10.0; python_version < "3.12"

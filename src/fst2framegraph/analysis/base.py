@@ -172,10 +172,11 @@ class AnalysisBase:
         frame_totals = Counter(event.frame_type for event in filtered)
         agent_totals = Counter(event.agent_text for event in filtered)
         overall = len(filtered)
+        effective_min_count = max(1, min(int(min_count or 1), max(pair_counts.values())))
 
         rows: list[dict[str, Any]] = []
         for (agent, frame_type), observed in pair_counts.items():
-            if observed < min_count:
+            if observed < effective_min_count:
                 continue
             expected = (agent_totals[agent] * frame_totals[frame_type]) / overall if overall else 0.0
             if expected <= 0:

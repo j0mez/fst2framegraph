@@ -137,6 +137,38 @@ def test_missing_filler_returns_empty_structures() -> None:
     assert empty_analysis.agent_frame_communities() == {"assignments": {}, "top_terms": {}}
 
 
+def test_agent_frame_lift_relaxes_min_count_for_tiny_corpora() -> None:
+    graph = FrameGraphBuilder().build_graph(
+        [
+            {
+                "doc_id": "tiny",
+                "text": "We help.",
+                "metadata": {},
+                "frames": [
+                    {
+                        "frame_type": "Assistance",
+                        "trigger": "help",
+                        "sent_idx": 0,
+                        "frame_elements": [{"role": "Agent", "text": "We"}],
+                    }
+                ],
+            }
+        ]
+    )
+    analysis = AnalysisBase(graph)
+
+    result = analysis.agent_frame_lift(top_n_frames=20, top_n_agents=30, min_count=5)
+
+    assert list(result.columns) == ["agent", "frame_type", "count", "lift"]
+    assert not result.empty
+    assert result.iloc[0].to_dict() == {
+        "agent": "we",
+        "frame_type": "Assistance",
+        "count": 1,
+        "lift": 1.0,
+    }
+
+
 def test_analysis_works_with_sentence_nodes_disabled() -> None:
     builder = FrameGraphBuilder(include_sentence_nodes=False)
     graph = builder.build_graph(analysis_documents())

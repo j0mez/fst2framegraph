@@ -23,20 +23,51 @@ For core graph/build use without the FST inference stack:
 
 ```bash
 python -m pip install -r requirements.txt
-python -m pip install -e .
+python -m pip install --find-links=wheels/ -e .
 ```
 
-For full FST detection use:
+For Colab/Python 3.12 FST detection, fetch the bundled wheel first, then run
+the installer that installs `sentencepiece==0.2.0` before the upstream FST
+package:
 
 ```bash
-python -m pip install -r requirements-fst.txt
-python -m pip install -e ".[fst]"
+python scripts/fetch_wheels.py
+python scripts/install_colab_fst.py
 ```
 
-The upstream Frame Semantic Transformer stack currently installs most reliably on
-Python 3.10/3.11. Core `fst2framegraph` graph building, inspection, conversion,
-materialisation and FrameBase indexing do not require Torch or FST and work on
-Python 3.10-3.12.
+The expected wheel is
+`wheels/sentencepiece-0.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`.
+When the wheel is present, `python -m pip install --find-links=wheels/ -e .`
+uses it and avoids a source build. Core `fst2framegraph` graph building,
+inspection, conversion, materialisation and FrameBase indexing do not require
+Torch or FST and work on Python 3.10-3.12.
+
+## OxCCAL CSV pipeline
+
+For an OxCCAL-style CSV with a `Transcript (text and audio)` column:
+
+```bash
+python run_pipeline.py oxccal_sample.csv --out pipeline_outputs
+```
+
+The runner extracts `[ad text:]` content, discards `[audio transcript:]` and
+similar sections, skips empty ads with a warning, runs FST inference when the
+FST stack is installed, and writes a timestamped output folder containing:
+
+- `frame_graph.graphml`
+- `agent_frame_lift.csv`
+- `agent_frame_communities.json`
+- `summary_report.txt`
+
+If `frame-semantic-transformer` is unavailable, the runner uses a small offline
+fallback backend for smoke tests and demos. Add `--require-real-fst` to fail
+instead of falling back.
+
+## Colab notebook
+
+Open `run_in_colab.ipynb` in a fresh Colab runtime, run the cells, upload the
+project zip if prompted, then upload the CSV. The notebook installs from
+`wheels/`, runs `run_pipeline.py`, and displays the summary and lift table.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 

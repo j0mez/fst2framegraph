@@ -5,6 +5,7 @@ from .analysis import AnalysisBase
 from .fst import FSTGraphWriter, build_graph_from_clean, encode_with_fst, materialise_run
 from .graph.builder import FrameGraphBuilder
 from .io.inspect_outputs import convert_fst_outputs, inspect_fst_outputs
+from .io.transcripts import clean_transcript
 
 __version__ = "0.4.0-alpha"
 
@@ -19,6 +20,7 @@ __all__ = [
     "AnalysisBase",
     "FrameGraphBuilder",
     "build_graph_from_clean",
+    "clean_transcript",
     "encode_with_fst",
     "convert_fst_outputs",
     "from_frame_elements_long_csv",
