@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import sysconfig
+from collections.abc import MutableMapping
 from pathlib import Path
 
 
@@ -21,6 +23,33 @@ FST_RUNTIME_REQUIREMENTS = [
     "pytorch-lightning>=1.6.2,<2.0.0",
     "tqdm>=4.64.0,<5.0.0",
 ]
+COLAB_BACKEND_ENV = {
+    "USE_TF": "0",
+    "TRANSFORMERS_NO_TF": "1",
+    "USE_FLAX": "0",
+    "TOKENIZERS_PARALLELISM": "false",
+}
+COLAB_ENV_GUARD_NAME = "fst2framegraph_colab_env.pth"
+
+
+def apply_colab_backend_env(env: MutableMapping[str, str] = os.environ) -> None:
+    for name, value in COLAB_BACKEND_ENV.items():
+        env.setdefault(name, value)
+
+
+def write_colab_backend_env_guard(site_packages_dir: str | Path | None = None) -> Path:
+    target_dir = Path(site_packages_dir or sysconfig.get_paths()["purelib"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / COLAB_ENV_GUARD_NAME
+    statements = [
+        "import os",
+        *[
+            f"os.environ.setdefault({name!r}, {value!r})"
+            for name, value in COLAB_BACKEND_ENV.items()
+        ],
+    ]
+    path.write_text("; ".join(statements) + "\n", encoding="utf-8")
+    return path
 
 
 def _pip(*args: str) -> None:
@@ -28,10 +57,8 @@ def _pip(*args: str) -> None:
 
 
 def main() -> int:
-    os.environ.setdefault("USE_TF", "0")
-    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-    os.environ.setdefault("USE_FLAX", "0")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    apply_colab_backend_env()
+    write_colab_backend_env_guard()
 
     if not SENTENCEPIECE_WHEEL.exists():
         subprocess.check_call([sys.executable, str(ROOT / "scripts" / "fetch_wheels.py")])

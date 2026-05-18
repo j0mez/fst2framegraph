@@ -42,6 +42,12 @@ DEFAULT_TEXT_COLUMNS = [
 DEFAULT_ID_COLUMNS = ["Advert ID", "advert_id", "ad_id", "sentence_id", "id"]
 DEFAULT_DOC_COLUMNS = ["doc_id", "document_id", "Advert ID", "advert_id", "ad_id", "id"]
 DEFAULT_FRAMEBASE_DIR = Path("data") / "framebase"
+FST_BACKEND_ENV = {
+    "USE_TF": "0",
+    "TRANSFORMERS_NO_TF": "1",
+    "USE_FLAX": "0",
+    "TOKENIZERS_PARALLELISM": "false",
+}
 
 
 @dataclass
@@ -107,11 +113,13 @@ def _guess_agent(sentence: str) -> str:
     return words[0] if words else ""
 
 
+def _apply_fst_backend_env() -> None:
+    for name, value in FST_BACKEND_ENV.items():
+        os.environ.setdefault(name, value)
+
+
 def _make_runtime_fst(*, require_real_fst: bool = False) -> Any:
-    os.environ.setdefault("USE_TF", "0")
-    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-    os.environ.setdefault("USE_FLAX", "0")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    _apply_fst_backend_env()
     try:
         from frame_semantic_transformer import FrameSemanticTransformer
     except Exception as exc:
@@ -426,6 +434,7 @@ def run_pipeline(
     require_framebase: bool = True,
     min_filler_len: int = 1,
 ) -> dict[str, Any]:
+    _apply_fst_backend_env()
     csv_path = Path(csv_path)
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)

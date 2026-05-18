@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import networkx as nx
@@ -83,6 +84,34 @@ def test_run_pipeline_requires_framebase_before_calling_fst(tmp_path: Path) -> N
             fst=FailIfCalledFST(),
             timestamp="missing-framebase",
         )
+
+
+def test_run_pipeline_sets_tensorflow_disable_environment_before_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("USE_TF", "TRANSFORMERS_NO_TF", "USE_FLAX", "TOKENIZERS_PARALLELISM"):
+        monkeypatch.delenv(name, raising=False)
+    csv_path = tmp_path / "oxccal_sample.csv"
+    pd.DataFrame(
+        {
+            "Advert ID": ["ad-1"],
+            "Transcript (text and audio)": ["[ad text:] We invest in clean power."],
+        }
+    ).to_csv(csv_path, index=False)
+
+    with pytest.raises(RuntimeError, match="FrameBase"):
+        run_pipeline(
+            csv_path,
+            output_root=tmp_path / "outputs",
+            fst=FailIfCalledFST(),
+            timestamp="missing-framebase",
+        )
+
+    assert os.environ["USE_TF"] == "0"
+    assert os.environ["TRANSFORMERS_NO_TF"] == "1"
+    assert os.environ["USE_FLAX"] == "0"
+    assert os.environ["TOKENIZERS_PARALLELISM"] == "false"
 
 
 def test_run_pipeline_handles_oxccal_transcripts_with_markers(tmp_path: Path) -> None:
