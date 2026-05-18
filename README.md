@@ -33,12 +33,41 @@ python -m pip install -r requirements-fst.txt
 python -m pip install -e ".[fst]"
 ```
 
-The upstream Frame Semantic Transformer stack currently installs most reliably on
-Python 3.10/3.11. Core `fst2framegraph` graph building, inspection, conversion,
-materialisation and FrameBase indexing do not require Torch or FST and work on
-Python 3.10-3.12.
+For Colab and Python 3.12, use the pinned `requirements-colab.txt` stack. Core
+`fst2framegraph` graph building, inspection, conversion, materialisation and
+FrameBase indexing work on Python 3.10-3.12.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
+
+## Product one-call pipeline (v2)
+
+For non-coders and Colab-first workflows, use the one-call product path:
+
+```python
+from fst2framegraph import run_fst2graph
+
+result = run_fst2graph(
+    input_csv="oxccal_20_sample.csv",
+    out_root="outputs",
+    text_col="Transcript (text and audio)",
+    id_col="Unique ID",
+    doc_col="Unique ID",
+    batch_size=16,
+    dedupe=True,
+    random_seed=42,
+)
+print(result["summary_path"])
+```
+
+Equivalent wrappers:
+
+```bash
+fst2framegraph pipeline --input oxccal_20_sample.csv --out-root outputs
+python run_pipeline.py --input oxccal_20_sample.csv --out-root outputs
+```
+
+This path runs preflight checks first and fails with concrete remediation commands
+if the runtime/dependencies are not ready.
 
 ## Reusable FrameGraphBuilder API
 
@@ -403,8 +432,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 !pip install -r requirements-colab.txt
 !pip install -e .
 
-from frame_semantic_transformer import FrameSemanticTransformer
-from fst2framegraph import encode_with_fst, setup_framebase
+from fst2framegraph import run_fst2graph, setup_framebase
 
 setup_framebase(
     framebase_dir="/content/drive/MyDrive/framebase",
@@ -412,17 +440,17 @@ setup_framebase(
     reuse_existing=True,
 )
 
-report = encode_with_fst(
-    fst=FrameSemanticTransformer(),
-    data="/content/drive/MyDrive/my_project/sentences.csv",
-    sentence_col="sentence",
-    sentence_id_col="sentence_id",
-    out_dir="/content/drive/MyDrive/my_project/fst_runs/run_001",
-    resume=True,
-    checkpoint_every=100,
-    batch_size=32,
+report = run_fst2graph(
+    input_csv="/content/drive/MyDrive/my_project/oxccal_20_sample.csv",
+    out_root="/content/drive/MyDrive/my_project/fst_runs",
+    text_col="Transcript (text and audio)",
+    id_col="Unique ID",
+    doc_col="Unique ID",
+    batch_size=16,
 )
 ```
+
+For a copy-paste notebook flow, use [`run_in_colab.ipynb`](run_in_colab.ipynb).
 
 ## Custom column mapping example
 

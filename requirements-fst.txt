@@ -1,5 +1,7 @@
 -r requirements.txt
-# Upstream frame-semantic-transformer 0.10.0 pins older inference dependencies
-# that do not currently install cleanly on Python 3.12/macOS. Core graph,
-# materialise, inspect, and convert workflows do not require this stack.
-frame-semantic-transformer>=0.10.0; python_version < "3.12"
+protobuf==3.20.3
+frame-semantic-transformer==0.10.0
+sentencepiece==0.2.0
+numpy==1.26.4
+tqdm==4.66.4
+dill==0.3.8

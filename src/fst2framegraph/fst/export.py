@@ -973,15 +973,13 @@ def _make_default_fst(device: str | None) -> Any:
         raise ImportError(
             "frame-semantic-transformer is required when fst=None, "
             "or pass an existing FST object. Install with "
-            "`pip install 'fst2framegraph[fst]'`. "
+            "`pip install -r requirements-fst.txt && pip install -e .`. "
             "Colab users should run: "
             "`import os; os.environ['USE_TF']='0'; "
             "os.environ['TRANSFORMERS_NO_TF']='1'; "
             "os.environ['USE_FLAX']='0'; "
             "os.environ['TOKENIZERS_PARALLELISM']='false'` and then install "
-            "`protobuf>=3.20.1,<4.0.0` plus `frame-semantic-transformer==0.10.0`. "
-            "Real FST inference is recommended on Python 3.10/3.11 because "
-            "the upstream dependency stack is constrained on Python 3.12."
+            "`requirements-colab.txt` plus `pip install -e .`."
         ) from exc
 
     if device and _supports_keyword(FrameSemanticTransformer, "device"):

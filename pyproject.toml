@@ -34,12 +34,20 @@ dependencies = [
 
 [project.optional-dependencies]
 fst = [
-  # frame-semantic-transformer 0.10.0 pins an older sentencepiece/protobuf stack
-  # that does not currently install cleanly on Python 3.12/macOS.
-  "frame-semantic-transformer>=0.10.0; python_version < '3.12'"
+  "protobuf>=3.20.1,<4.0.0",
+  "frame-semantic-transformer==0.10.0",
+  "sentencepiece==0.2.0",
+  "numpy==1.26.4",
+  "tqdm==4.66.4",
+  "dill==0.3.8"
 ]
 colab = [
-  "frame-semantic-transformer>=0.10.0; python_version < '3.12'"
+  "protobuf>=3.20.1,<4.0.0",
+  "frame-semantic-transformer==0.10.0",
+  "sentencepiece==0.2.0",
+  "numpy==1.26.4",
+  "tqdm==4.66.4",
+  "dill==0.3.8"
 ]
 dev = [
   "pytest>=8.0",

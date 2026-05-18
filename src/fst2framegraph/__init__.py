@@ -5,6 +5,7 @@ from .analysis import AnalysisBase
 from .fst import FSTGraphWriter, build_graph_from_clean, encode_with_fst, materialise_run
 from .graph.builder import FrameGraphBuilder
 from .io.inspect_outputs import convert_fst_outputs, inspect_fst_outputs
+from .pipeline_v2 import run_fst2graph
 
 __version__ = "0.4.0-alpha"
 
@@ -26,5 +27,6 @@ __all__ = [
     "from_legacy_pickle",
     "inspect_fst_outputs",
     "materialise_run",
+    "run_fst2graph",
     "setup_framebase",
 ]
