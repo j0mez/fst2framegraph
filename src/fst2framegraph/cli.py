@@ -1166,7 +1166,7 @@ def run_workflow(
     yes: bool = typer.Option(False, "--yes", help="Skip non-risky confirmations."),
     interactive: bool = typer.Option(False, "--interactive", help="Ask guided questions when helpful."),
 ) -> None:
-    """Smart workflow: inspect + plan + execute."""
+    """Smart workflow: inspect + plan + execute. Use --plan to preview."""
     try:
         inspection = inspect_fst_outputs(input)
     except Exception as exc:

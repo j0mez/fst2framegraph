@@ -50,6 +50,9 @@ class SyntheticSetstateKeyError:
     def __init__(self) -> None:
         self.frames = []
 
+    def __getstate__(self) -> dict[str, object]:
+        return self.__dict__
+
     def __getattr__(self, name: str):
         raise KeyError(name)
 
