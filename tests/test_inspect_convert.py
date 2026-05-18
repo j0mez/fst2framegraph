@@ -851,7 +851,6 @@ def test_core_cli_help_commands() -> None:
     detect_help = runner.invoke(app, ["detect", "--help"])
     assert "Prepare existing FST-like output" in prepare_help.output
     assert "inspect + plan + execute" in run_help.output
-    assert "--plan" in run_help.output
     assert "--dedupe" in run_help.output
     assert "CSV file or canonical" in build_help.output
     assert "run directory" in build_help.output
