@@ -17,7 +17,6 @@ from fst2framegraph.fst.export import (
     _json_safe,
     _make_error_record,
     _make_success_record,
-    _plain,
     _stable_frame_instance_id,
     _stable_sentence_id,
     _utc_now,

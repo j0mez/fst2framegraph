@@ -1,12 +1,13 @@
 from __future__ import annotations
+# ruff: noqa: E402
 
 import argparse
 import json
 import os
 import sys
 import warnings
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,17 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from fst2framegraph import AnalysisBase, FrameGraphBuilder, encode_with_fst, from_fst_output
+from fst2framegraph.framebase.download import find_framebase_files
+from fst2framegraph.framebase.index import find_framebase_index, load_schema_from_index
+from fst2framegraph.framebase.load_schema import FrameBaseSchema
+from fst2framegraph.graph.build_nested import build_nested_edges
+from fst2framegraph.graph.build_reified import build_reified_tables
+from fst2framegraph.graph.export_graph import build_sentence_graphs, write_graphml
+from fst2framegraph.io.column_detection import detect_columns
 from fst2framegraph.io.transcripts import clean_transcript
+from fst2framegraph.io.write_outputs import ensure_out_dir, write_csv, write_json, write_jsonl
+from fst2framegraph.qc.ambiguity_report import repeated_frame_warnings
+from fst2framegraph.qc.coverage_report import make_qc_report
 
 
 DEFAULT_TEXT_COLUMNS = [
@@ -30,6 +41,7 @@ DEFAULT_TEXT_COLUMNS = [
 ]
 DEFAULT_ID_COLUMNS = ["Advert ID", "advert_id", "ad_id", "sentence_id", "id"]
 DEFAULT_DOC_COLUMNS = ["doc_id", "document_id", "Advert ID", "advert_id", "ad_id", "id"]
+DEFAULT_FRAMEBASE_DIR = Path("data") / "framebase"
 
 
 @dataclass
@@ -49,6 +61,15 @@ class _SimpleFrame:
 class _SimpleResult:
     sentence: str
     frames: list[_SimpleFrame]
+
+
+@dataclass(frozen=True)
+class _FrameBaseRuntime:
+    schema: FrameBaseSchema
+    source: str
+    framebase_dir: Path | None
+    framebase_core: Path | None
+    framebase_index: Path | None
 
 
 class _RuleBasedFallbackFST:
@@ -122,6 +143,68 @@ def _first_existing(columns: list[str], candidates: list[str]) -> str | None:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _optional_path(value: str | Path | None) -> Path | None:
+    return Path(value) if value is not None else None
+
+
+def _schema_has_entries(schema: FrameBaseSchema) -> bool:
+    return bool(schema.frame_lookup or schema.fe_lookup)
+
+
+def _resolve_framebase_runtime(
+    *,
+    framebase_dir: str | Path | None,
+    framebase_core: str | Path | None,
+    framebase_index: str | Path | None,
+) -> _FrameBaseRuntime:
+    """Load FrameBase schema before running any expensive FST work."""
+    resolved_dir = _optional_path(framebase_dir)
+    explicit_core = _optional_path(framebase_core)
+    explicit_index = _optional_path(framebase_index)
+
+    found = find_framebase_files(resolved_dir) if resolved_dir is not None else {}
+    if explicit_index is not None:
+        resolved_index = explicit_index
+    elif explicit_core is not None:
+        resolved_index = None
+    else:
+        resolved_index = find_framebase_index(resolved_dir)
+    resolved_core = explicit_core or found.get("core_schema")
+
+    if resolved_index is not None:
+        if not resolved_index.exists():
+            raise RuntimeError(f"FrameBase index does not exist: {resolved_index}")
+        schema = load_schema_from_index(resolved_index)
+        source = "index"
+    elif resolved_core is not None:
+        if not resolved_core.exists():
+            raise RuntimeError(f"FrameBase core schema does not exist: {resolved_core}")
+        schema = FrameBaseSchema.from_turtle(resolved_core)
+        source = "core"
+    else:
+        raise RuntimeError(
+            "FrameBase schema is required before running the pipeline. Run "
+            "`fst2framegraph setup-framebase --out data/framebase --build-index`, "
+            "or pass --framebase-index /path/to/framebase_index.sqlite, "
+            "--framebase-core /path/to/FrameBase_schema_core.ttl, or "
+            "--framebase-dir /path/to/framebase."
+        )
+
+    if not _schema_has_entries(schema):
+        raise RuntimeError(
+            "FrameBase schema was found but no frames or frame elements could be loaded. "
+            "Rebuild the index or pass a valid FrameBase core schema."
+        )
+
+    return _FrameBaseRuntime(
+        schema=schema,
+        source=source,
+        framebase_dir=resolved_dir,
+        framebase_core=resolved_core,
+        framebase_index=resolved_index,
+    )
 
 
 def _prepare_text_rows(
@@ -208,6 +291,124 @@ def _prepare_text_rows(
     return prepared, report
 
 
+def _write_framebase_outputs(
+    *,
+    clean_dir: Path,
+    out_dir: Path,
+    framebase: _FrameBaseRuntime,
+    min_filler_len: int,
+) -> dict[str, Any]:
+    source_csv = clean_dir / "frame_elements_long.csv"
+    if not source_csv.exists():
+        raise RuntimeError(f"FST output missing required FrameBase input: {source_csv}")
+
+    raw_df = pd.read_csv(source_csv)
+    cmap = detect_columns(raw_df)
+    ensure_out_dir(out_dir)
+
+    documents, sentences, frame_instances, frame_elements, nodes, reified_edges = build_reified_tables(
+        raw_df,
+        cmap,
+        framebase.schema,
+        min_filler_len=min_filler_len,
+    )
+    nested_edges = build_nested_edges(frame_instances, frame_elements)
+    dereified_edges = pd.DataFrame()
+    dereification_diagnostics = pd.DataFrame()
+    edges = pd.concat([reified_edges, nested_edges, dereified_edges], ignore_index=True, sort=False)
+    warnings_list = repeated_frame_warnings(frame_instances)
+
+    write_csv(documents, out_dir, "documents.csv")
+    write_csv(sentences, out_dir, "sentences.csv")
+    write_csv(frame_instances, out_dir, "frame_instances.csv")
+    write_csv(frame_elements, out_dir, "frame_elements.csv")
+    write_csv(
+        frame_elements.rename(
+            columns={
+                "fe_name": "element_name",
+                "filler_text": "element_filler",
+            }
+        ),
+        out_dir,
+        "frame_elements_long.csv",
+    )
+    write_csv(nodes, out_dir, "graph_nodes.csv")
+    write_csv(reified_edges, out_dir, "graph_edges_reified.csv")
+    write_csv(nested_edges, out_dir, "graph_edges_nested.csv")
+    write_csv(dereified_edges, out_dir, "graph_edges_dereified.csv")
+    write_csv(dereified_edges, out_dir, "direct_edges.csv")
+    write_csv(dereification_diagnostics, out_dir, "dereification_diagnostics.csv")
+    write_csv(edges, out_dir, "edges.csv")
+
+    if sentences.empty or frame_instances.empty or frame_elements.empty:
+        sentence_graphs = []
+    else:
+        sentence_graphs = build_sentence_graphs(
+            sentences,
+            frame_instances,
+            frame_elements,
+            nested_edges,
+            dereified_edges,
+        )
+    write_jsonl(sentence_graphs, out_dir, "sentence_graphs.jsonl")
+
+    qc = make_qc_report(
+        source_rows=len(raw_df),
+        documents=documents,
+        sentences=sentences,
+        frame_instances=frame_instances,
+        frame_elements=frame_elements,
+        reified_edges=reified_edges,
+        nested_edges=nested_edges,
+        dereified_edges=dereified_edges,
+        warnings=warnings_list,
+    )
+    qc_payload = qc.model_dump()
+    write_json(qc_payload, out_dir, "qc_report.json")
+    write_json(
+        {
+            **qc_payload,
+            "framebase_source": framebase.source,
+            "framebase_index_used": framebase.framebase_index is not None,
+            "framebase_index_path": str(framebase.framebase_index) if framebase.framebase_index else None,
+            "framebase_core_path": str(framebase.framebase_core) if framebase.framebase_core else None,
+        },
+        out_dir,
+        "summary.json",
+    )
+    write_json(
+        {
+            "input": str(source_csv),
+            "framebase_source": framebase.source,
+            "framebase_dir": str(framebase.framebase_dir) if framebase.framebase_dir else None,
+            "framebase_core": str(framebase.framebase_core) if framebase.framebase_core else None,
+            "framebase_index": str(framebase.framebase_index) if framebase.framebase_index else None,
+            "columns": cmap.model_dump(),
+        },
+        out_dir,
+        "manifest.json",
+    )
+    write_graphml(nodes, out_dir / "graph.graphml", reified_edges, nested_edges, dereified_edges)
+
+    return {
+        "framebase_reified_dir": str(out_dir),
+        "framebase_source": framebase.source,
+        "framebase_core": str(framebase.framebase_core) if framebase.framebase_core else None,
+        "framebase_index": str(framebase.framebase_index) if framebase.framebase_index else None,
+        "reified_documents": int(len(documents)),
+        "reified_sentences": int(len(sentences)),
+        "reified_frame_instances": int(len(frame_instances)),
+        "reified_frame_elements": int(len(frame_elements)),
+        "reified_edges": int(len(reified_edges)),
+        "nested_edges": int(len(nested_edges)),
+        "dereified_edges": int(len(dereified_edges)),
+        "framebase_validated_frames": int(qc.framebase_validated_frames),
+        "framebase_validated_frame_elements": int(qc.framebase_validated_frame_elements),
+        "framebase_unmatched_frames": int(qc.framebase_unmatched_frames),
+        "framebase_unmatched_frame_elements": int(qc.framebase_unmatched_frame_elements),
+    }
+
+
 def run_pipeline(
     csv_path: str | Path,
     *,
@@ -219,10 +420,23 @@ def run_pipeline(
     timestamp: str | None = None,
     min_count: int = 2,
     require_real_fst: bool = False,
+    framebase_dir: str | Path | None = DEFAULT_FRAMEBASE_DIR,
+    framebase_core: str | Path | None = None,
+    framebase_index: str | Path | None = None,
+    require_framebase: bool = True,
+    min_filler_len: int = 1,
 ) -> dict[str, Any]:
     csv_path = Path(csv_path)
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)
+    if not require_framebase:
+        raise RuntimeError("run_pipeline requires FrameBase; fallback IRIs are not supported.")
+
+    framebase = _resolve_framebase_runtime(
+        framebase_dir=framebase_dir,
+        framebase_core=framebase_core,
+        framebase_index=framebase_index,
+    )
 
     run_stamp = timestamp or _timestamp()
     output_dir = Path(output_root) / f"fst2framegraph_{run_stamp}"
@@ -263,6 +477,12 @@ def run_pipeline(
     graph = FrameGraphBuilder().build_graph(documents)
     graph_path = output_dir / "frame_graph.graphml"
     FrameGraphBuilder().save_graph(graph, graph_path)
+    framebase_report = _write_framebase_outputs(
+        clean_dir=clean_dir,
+        out_dir=output_dir / "reified",
+        framebase=framebase,
+        min_filler_len=min_filler_len,
+    )
 
     analysis = AnalysisBase(graph)
     lift = analysis.agent_frame_lift(top_n_frames=20, top_n_agents=30, min_count=min_count)
@@ -286,6 +506,7 @@ def run_pipeline(
         "graph_edges": int(graph.number_of_edges()),
         "lift_rows": int(len(lift)),
         "encode_report": encode_report,
+        **framebase_report,
     }
     summary_path = output_dir / "summary_report.txt"
     summary_path.write_text(_format_summary(result), encoding="utf-8")
@@ -304,10 +525,14 @@ def _format_summary(result: dict[str, Any]) -> str:
         f"Graph nodes: {result['graph_nodes']}",
         f"Graph edges: {result['graph_edges']}",
         f"Agent-frame lift rows: {result['lift_rows']}",
+        f"FrameBase reified edges: {result['reified_edges']}",
+        f"FrameBase validated frames: {result['framebase_validated_frames']}",
+        f"FrameBase validated frame elements: {result['framebase_validated_frame_elements']}",
         "",
         f"GraphML: {result['graph_path']}",
         f"Lift CSV: {result['lift_path']}",
         f"Communities JSON: {result['communities_path']}",
+        f"FrameBase reified dir: {result['framebase_reified_dir']}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -320,6 +545,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--id-col", default=None, help="Source row identifier column.")
     parser.add_argument("--doc-col", default=None, help="Document identifier column.")
     parser.add_argument("--min-count", type=int, default=2, help="Minimum pair count for lift.")
+    parser.add_argument(
+        "--framebase-dir",
+        type=Path,
+        default=DEFAULT_FRAMEBASE_DIR,
+        help="Directory containing FrameBase files or framebase_index.sqlite.",
+    )
+    parser.add_argument("--framebase-core", type=Path, default=None, help="FrameBase core schema TTL path.")
+    parser.add_argument("--framebase-index", type=Path, default=None, help="Prebuilt FrameBase SQLite index path.")
+    parser.add_argument("--min-filler-len", type=int, default=1, help="Minimum filler length for reified output.")
     parser.add_argument(
         "--require-real-fst",
         action="store_true",
@@ -339,6 +573,10 @@ def main(argv: list[str] | None = None) -> int:
         doc_col=args.doc_col,
         min_count=args.min_count,
         require_real_fst=args.require_real_fst,
+        framebase_dir=args.framebase_dir,
+        framebase_core=args.framebase_core,
+        framebase_index=args.framebase_index,
+        min_filler_len=args.min_filler_len,
     )
     print(_format_summary(result))
     return 0

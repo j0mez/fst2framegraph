@@ -47,17 +47,26 @@ Torch or FST and work on Python 3.10-3.12.
 For an OxCCAL-style CSV with a `Transcript (text and audio)` column:
 
 ```bash
-python run_pipeline.py oxccal_sample.csv --out pipeline_outputs
+fst2framegraph setup-framebase --out data/framebase
+python run_pipeline.py oxccal_sample.csv --out pipeline_outputs --framebase-dir data/framebase
 ```
 
 The runner extracts `[ad text:]` content, discards `[audio transcript:]` and
-similar sections, skips empty ads with a warning, runs FST inference when the
-FST stack is installed, and writes a timestamped output folder containing:
+similar sections, skips empty ads with a warning, requires a real FrameBase
+schema or index before FST inference starts, and writes a timestamped output
+folder containing:
 
 - `frame_graph.graphml`
 - `agent_frame_lift.csv`
 - `agent_frame_communities.json`
+- `reified/frame_instances.csv`
+- `reified/frame_elements.csv`
+- `reified/graph_edges_reified.csv`
+- `reified/graph.graphml`
 - `summary_report.txt`
+
+If no FrameBase schema/index is available, `run_pipeline.py` fails before
+calling FST. It never writes generated fallback FrameBase IRIs.
 
 If `frame-semantic-transformer` is unavailable, the runner uses a small offline
 fallback backend for smoke tests and demos. Add `--require-real-fst` to fail
@@ -93,7 +102,9 @@ outputs, analysis tables, and JSON/Markdown run summaries.
 
 Open `run_in_colab.ipynb` in a fresh Colab runtime, run the cells, upload the
 project zip if prompted, then upload the CSV. The notebook installs from
-`wheels/`, runs `run_pipeline.py`, and displays the summary and lift table.
+`wheels/`, downloads the FrameBase schema into `data/framebase/`, runs
+`run_pipeline.py` with `--require-real-fst`, and displays the summary, lift
+table, and FrameBase reified frame/FE tables.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 
