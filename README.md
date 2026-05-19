@@ -104,7 +104,15 @@ Open `run_in_colab.ipynb` in a fresh Colab runtime, run the cells, upload the
 project zip if prompted, then upload the CSV. The notebook installs from
 `wheels/`, downloads the FrameBase schema into `data/framebase/`, runs
 `run_pipeline.py` with `--require-real-fst`, and displays the summary, lift
-table, and FrameBase reified frame/FE tables.
+table, and FrameBase reified frame/FE tables. It mounts Google Drive and writes
+the durable run folder under:
+
+```text
+/content/drive/MyDrive/fst2framegraph_outputs/
+```
+
+Use that Drive folder, not `/content`, for results you need after the Colab
+runtime shuts down.
 
 `fst2framegraph` is open-source software under the Apache License 2.0.
 
