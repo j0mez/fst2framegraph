@@ -62,6 +62,8 @@ folder containing:
 - `reified/frame_instances.csv`
 - `reified/frame_elements.csv`
 - `reified/graph_edges_reified.csv`
+- `reified/direct_edges.csv`
+- `reified/dereification_diagnostics.csv`
 - `reified/graph.graphml`
 - `summary_report.txt`
 
@@ -104,7 +106,8 @@ Open `run_in_colab.ipynb` in a fresh Colab runtime, run the cells, upload the
 project zip if prompted, then upload the CSV. The notebook installs from
 `wheels/`, downloads the FrameBase schema into `data/framebase/`, runs
 `run_pipeline.py` with `--require-real-fst`, and displays the summary, lift
-table, and FrameBase reified frame/FE tables. It mounts Google Drive and writes
+table, FrameBase reified frame/FE tables, and direct dereified edge table when
+FrameBase ReDer rules match. It mounts Google Drive and writes
 the durable run folder under:
 
 ```text

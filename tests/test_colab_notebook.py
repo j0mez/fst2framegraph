@@ -16,3 +16,5 @@ def test_colab_notebook_saves_pipeline_outputs_to_google_drive() -> None:
     assert "/content/drive/MyDrive/fst2framegraph_outputs" in source
     assert "output_root=output_root" in source
     assert "output_root='colab_outputs'" not in source
+    assert "direct_edges.csv" in source
+    assert "'dereified_edges': result['dereified_edges']" in source

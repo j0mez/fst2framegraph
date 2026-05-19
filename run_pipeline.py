@@ -20,8 +20,18 @@ if SRC.exists() and str(SRC) not in sys.path:
 
 from fst2framegraph import AnalysisBase, FrameGraphBuilder, encode_with_fst, from_fst_output
 from fst2framegraph.framebase.download import find_framebase_files
-from fst2framegraph.framebase.index import find_framebase_index, load_schema_from_index
+from fst2framegraph.framebase.index import (
+    find_framebase_index,
+    load_dbp_labels_from_index,
+    load_rules_from_index,
+    load_schema_from_index,
+)
+from fst2framegraph.framebase.load_dbp_labels import load_dbp_labels
 from fst2framegraph.framebase.load_schema import FrameBaseSchema
+from fst2framegraph.framebase.parse_dered_rules import parse_dered_rules
+from fst2framegraph.framebase.parse_spin_rules import parse_spin_dereification_rules
+from fst2framegraph.framebase.rule_index import RuleIndex
+from fst2framegraph.graph.build_dereified import build_dereified_edges
 from fst2framegraph.graph.build_nested import build_nested_edges
 from fst2framegraph.graph.build_reified import build_reified_tables
 from fst2framegraph.graph.export_graph import build_sentence_graphs, write_graphml
@@ -72,10 +82,14 @@ class _SimpleResult:
 @dataclass(frozen=True)
 class _FrameBaseRuntime:
     schema: FrameBaseSchema
+    dbp_labels: dict[str, str]
+    dereification_rules: list[Any]
     source: str
     framebase_dir: Path | None
     framebase_core: Path | None
     framebase_index: Path | None
+    dbp_labels_path: Path | None
+    dereification_rules_path: Path | None
 
 
 class _RuleBasedFallbackFST:
@@ -185,11 +199,22 @@ def _resolve_framebase_runtime(
         if not resolved_index.exists():
             raise RuntimeError(f"FrameBase index does not exist: {resolved_index}")
         schema = load_schema_from_index(resolved_index)
+        dbp_labels = load_dbp_labels_from_index(resolved_index)
+        dereification_rules = load_rules_from_index(resolved_index)
+        labels_path = None
+        rules_path = None
         source = "index"
     elif resolved_core is not None:
         if not resolved_core.exists():
             raise RuntimeError(f"FrameBase core schema does not exist: {resolved_core}")
         schema = FrameBaseSchema.from_turtle(resolved_core)
+        labels_path = found.get("dbp_labels")
+        rules_path = found.get("dereification_rules_spin") or found.get("dereification_rules_sparql")
+        dbp_labels = load_dbp_labels(labels_path)
+        if rules_path and "spin" in rules_path.name.lower():
+            dereification_rules = list(parse_spin_dereification_rules(rules_path, dbp_labels))
+        else:
+            dereification_rules = parse_dered_rules(rules_path, dbp_labels)
         source = "core"
     else:
         raise RuntimeError(
@@ -212,6 +237,10 @@ def _resolve_framebase_runtime(
         framebase_dir=resolved_dir,
         framebase_core=resolved_core,
         framebase_index=resolved_index,
+        dbp_labels=dbp_labels,
+        dereification_rules=dereification_rules,
+        dbp_labels_path=labels_path,
+        dereification_rules_path=rules_path,
     )
 
 
@@ -321,10 +350,18 @@ def _write_framebase_outputs(
         min_filler_len=min_filler_len,
     )
     nested_edges = build_nested_edges(frame_instances, frame_elements)
-    dereified_edges = pd.DataFrame()
-    dereification_diagnostics = pd.DataFrame()
+    rule_index = RuleIndex.from_rules(framebase.dereification_rules)
+    dereified_edges, dereification_diagnostics, dereification_stats = build_dereified_edges(
+        frame_instances,
+        frame_elements,
+        rule_index,
+    )
     edges = pd.concat([reified_edges, nested_edges, dereified_edges], ignore_index=True, sort=False)
     warnings_list = repeated_frame_warnings(frame_instances)
+    if not framebase.dereification_rules:
+        warnings_list.append(
+            "FrameBase dereification rules were not available; direct DBP edges were not generated."
+        )
 
     write_csv(documents, out_dir, "documents.csv")
     write_csv(sentences, out_dir, "sentences.csv")
@@ -380,6 +417,17 @@ def _write_framebase_outputs(
             "framebase_index_used": framebase.framebase_index is not None,
             "framebase_index_path": str(framebase.framebase_index) if framebase.framebase_index else None,
             "framebase_core_path": str(framebase.framebase_core) if framebase.framebase_core else None,
+            "dbp_label_count": int(len(framebase.dbp_labels)),
+            "dereification_rules_loaded": int(len(framebase.dereification_rules)),
+            "dereification_rules_matched": int(dereification_stats["dereification_rules_matched"]),
+            "dereification_rule_match_ambiguous": int(
+                dereification_stats["dereification_rule_match_ambiguous"]
+            ),
+            "dereification_rule_match_unmatched": int(
+                dereification_stats["dereification_rule_match_unmatched"]
+            ),
+            "dereification_opportunities": int(dereification_stats["dereification_opportunities"]),
+            "official_framebase_reder_edges": int(len(dereified_edges)),
         },
         out_dir,
         "summary.json",
@@ -391,6 +439,10 @@ def _write_framebase_outputs(
             "framebase_dir": str(framebase.framebase_dir) if framebase.framebase_dir else None,
             "framebase_core": str(framebase.framebase_core) if framebase.framebase_core else None,
             "framebase_index": str(framebase.framebase_index) if framebase.framebase_index else None,
+            "dbp_labels": str(framebase.dbp_labels_path) if framebase.dbp_labels_path else None,
+            "dereification_rules": (
+                str(framebase.dereification_rules_path) if framebase.dereification_rules_path else None
+            ),
             "columns": cmap.model_dump(),
         },
         out_dir,
@@ -535,6 +587,7 @@ def _format_summary(result: dict[str, Any]) -> str:
         f"Graph edges: {result['graph_edges']}",
         f"Agent-frame lift rows: {result['lift_rows']}",
         f"FrameBase reified edges: {result['reified_edges']}",
+        f"FrameBase dereified/direct edges: {result['dereified_edges']}",
         f"FrameBase validated frames: {result['framebase_validated_frames']}",
         f"FrameBase validated frame elements: {result['framebase_validated_frame_elements']}",
         "",

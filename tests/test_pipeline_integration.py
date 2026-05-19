@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import os
 from pathlib import Path
 
@@ -49,9 +50,39 @@ class NoFrameFST:
         return FakeResult(sentence, [])
 
 
+class CapabilityFST:
+    def detect_frames(self, sentence: str) -> FakeResult:
+        return FakeResult(
+            sentence,
+            [
+                FakeFrame(
+                    "Capability",
+                    sentence.lower().find("can"),
+                    [
+                        FakeFrameElement("Entity", "Technology"),
+                        FakeFrameElement("Event", "reduce emissions"),
+                    ],
+                )
+            ],
+        )
+
+
 class FailIfCalledFST:
     def detect_frames(self, sentence: str) -> FakeResult:
         raise AssertionError(f"FST should not run before FrameBase preflight: {sentence}")
+
+
+def write_text(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def write_gzip_text(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write(text.strip() + "\n")
+    return path
 
 
 def write_tiny_framebase_core(path: Path) -> Path:
@@ -64,6 +95,60 @@ def write_tiny_framebase_core(path: Path) -> Path:
         <http://framebase.org/fe/Protection.has_Agent> rdfs:label "Agent" .
         """,
         encoding="utf-8",
+    )
+    return path
+
+
+def write_tiny_framebase_dir_with_spin_rule(path: Path) -> Path:
+    write_text(
+        path / "FrameBase_schema_core.ttl",
+        """
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <http://framebase.org/frame/Capability.can.verb> rdfs:label "Capability.can.verb" .
+        <http://framebase.org/fe/Capability.has_entity> rdfs:label "Entity" .
+        <http://framebase.org/fe/Capability.has_event> rdfs:label "Event" .
+        """,
+    )
+    write_text(
+        path / "FrameBase_schema_dbps.ttl",
+        """
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <http://framebase.org/dbp/Capability.hasCapabilityForEvent> rdfs:label "hasCapabilityForEvent" .
+        """,
+    )
+    write_gzip_text(
+        path / "dereificationRulesSpinFormat.ttl.gz",
+        """
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix sp: <http://spinrdf.org/sp#> .
+
+        <http://framebase.org/rule/capability-can>
+            rdf:type sp:Construct ;
+            sp:templates (
+                [
+                    sp:subject [ sp:varName "S" ] ;
+                    sp:predicate <http://framebase.org/dbp/Capability.hasCapabilityForEvent> ;
+                    sp:object [ sp:varName "O" ]
+                ]
+            ) ;
+            sp:where (
+                [
+                    sp:subject [ sp:varName "R" ] ;
+                    sp:predicate rdf:type ;
+                    sp:object <http://framebase.org/frame/Capability.can.verb>
+                ]
+                [
+                    sp:subject [ sp:varName "R" ] ;
+                    sp:predicate <http://framebase.org/fe/Capability.has_entity> ;
+                    sp:object [ sp:varName "S" ]
+                ]
+                [
+                    sp:subject [ sp:varName "R" ] ;
+                    sp:predicate <http://framebase.org/fe/Capability.has_event> ;
+                    sp:object [ sp:varName "O" ]
+                ]
+            ) .
+        """,
     )
     return path
 
@@ -163,6 +248,41 @@ def test_run_pipeline_handles_oxccal_transcripts_with_markers(tmp_path: Path) ->
     assert {"frame_element_iri", "frame_element_validated"} <= set(reified_elements.columns)
     assert set(reified_frames["framebase_frame_validated"]) == {True}
     assert set(reified_elements["frame_element_validated"]) == {True}
+
+
+def test_run_pipeline_emits_direct_edges_from_framebase_spin_rules(tmp_path: Path) -> None:
+    csv_path = tmp_path / "oxccal_sample.csv"
+    pd.DataFrame(
+        {
+            "Advert ID": ["ad-1"],
+            "Transcript (text and audio)": ["[ad text:] Technology can reduce emissions."],
+        }
+    ).to_csv(csv_path, index=False)
+    framebase_dir = write_tiny_framebase_dir_with_spin_rule(tmp_path / "framebase")
+
+    result = run_pipeline(
+        csv_path,
+        output_root=tmp_path / "outputs",
+        fst=CapabilityFST(),
+        timestamp="dereified",
+        framebase_dir=framebase_dir,
+    )
+
+    output_dir = Path(result["output_dir"]) / "reified"
+    direct_edges = pd.read_csv(output_dir / "direct_edges.csv")
+    diagnostics = pd.read_csv(output_dir / "dereification_diagnostics.csv")
+    summary = pd.read_json(output_dir / "summary.json", typ="series")
+
+    assert result["dereified_edges"] == 1
+    assert summary["official_framebase_reder_edges"] == 1
+    assert summary["dereification_rules_loaded"] == 1
+    assert diagnostics.empty
+    assert len(direct_edges) == 1
+    edge = direct_edges.iloc[0]
+    assert edge["subject_filler"] == "Technology"
+    assert edge["object_filler"] == "reduce emissions"
+    assert edge["predicate_iri"] == "http://framebase.org/dbp/Capability.hasCapabilityForEvent"
+    assert edge["match_tier"] == "frame_target_fe_unique"
 
 
 def test_run_pipeline_validates_reified_output_against_framebase_schema(tmp_path: Path) -> None:

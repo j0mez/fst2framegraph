@@ -9,6 +9,46 @@ from fst2framegraph.normalise.ids import short_hash
 from fst2framegraph.schema import FrameBaseRule
 
 
+DIRECT_EDGE_COLUMNS = [
+    "edge_id",
+    "source",
+    "target",
+    "label",
+    "dbp_iri",
+    "layer",
+    "sentence_id",
+    "doc_id",
+    "frame_instance_id",
+    "edge_type",
+    "subject_filler",
+    "predicate_iri",
+    "predicate_label",
+    "object_filler",
+    "frame_name",
+    "target_text",
+    "subject_fe",
+    "object_fe",
+    "source_rule_id",
+    "source_format",
+    "match_tier",
+    "match_status",
+]
+
+DEREIFICATION_DIAGNOSTIC_COLUMNS = [
+    "sentence_id",
+    "doc_id",
+    "frame_instance_id",
+    "frame_name",
+    "target_text",
+    "subject_fe",
+    "object_fe",
+    "status",
+    "candidate_rule_count",
+    "candidate_rule_ids",
+    "message",
+]
+
+
 def _rows_for_fe(group: pd.DataFrame, fe_name: str | None) -> list:
     if not fe_name:
         return []
@@ -79,7 +119,7 @@ def build_dereified_edges(
     rule_index: RuleIndex,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
     if frame_instances.empty or frame_elements.empty:
-        return pd.DataFrame(), pd.DataFrame(), {
+        return pd.DataFrame(columns=DIRECT_EDGE_COLUMNS), pd.DataFrame(columns=DEREIFICATION_DIAGNOSTIC_COLUMNS), {
             "dereification_rules_matched": 0,
             "dereification_rule_match_ambiguous": 0,
             "dereification_rule_match_unmatched": 0,
@@ -200,8 +240,12 @@ def build_dereified_edges(
                     }
                 )
 
-    direct_df = pd.DataFrame(direct_edges).drop_duplicates("edge_id") if direct_edges else pd.DataFrame()
-    diagnostics_df = pd.DataFrame(diagnostics)
+    direct_df = (
+        pd.DataFrame(direct_edges, columns=DIRECT_EDGE_COLUMNS).drop_duplicates("edge_id")
+        if direct_edges
+        else pd.DataFrame(columns=DIRECT_EDGE_COLUMNS)
+    )
+    diagnostics_df = pd.DataFrame(diagnostics, columns=DEREIFICATION_DIAGNOSTIC_COLUMNS)
     stats = {
         "dereification_rules_matched": matched,
         "dereification_rule_match_ambiguous": ambiguous,
