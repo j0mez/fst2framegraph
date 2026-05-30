@@ -37,7 +37,7 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def write_json(data: dict[str, Any], out_dir: Path, name: str) -> Path:
+def write_json(data: Any, out_dir: Path, name: str) -> Path:
     path = out_dir / name
     path.write_text(json.dumps(json_safe(data), indent=2, ensure_ascii=False), encoding="utf-8")
     return path
