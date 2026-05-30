@@ -38,6 +38,7 @@ from fst2framegraph.graph.export_graph import build_sentence_graphs, write_graph
 from fst2framegraph.io.column_detection import detect_columns
 from fst2framegraph.io.transcripts import clean_transcript
 from fst2framegraph.io.write_outputs import ensure_out_dir, write_csv, write_json, write_jsonl
+from fst2framegraph.io.web_artifact import write_web_artifact
 from fst2framegraph.qc.ambiguity_report import repeated_frame_warnings
 from fst2framegraph.qc.coverage_report import make_qc_report
 
@@ -410,43 +411,49 @@ def _write_framebase_outputs(
     )
     qc_payload = qc.model_dump()
     write_json(qc_payload, out_dir, "qc_report.json")
-    write_json(
-        {
-            **qc_payload,
-            "framebase_source": framebase.source,
-            "framebase_index_used": framebase.framebase_index is not None,
-            "framebase_index_path": str(framebase.framebase_index) if framebase.framebase_index else None,
-            "framebase_core_path": str(framebase.framebase_core) if framebase.framebase_core else None,
-            "dbp_label_count": int(len(framebase.dbp_labels)),
-            "dereification_rules_loaded": int(len(framebase.dereification_rules)),
-            "dereification_rules_matched": int(dereification_stats["dereification_rules_matched"]),
-            "dereification_rule_match_ambiguous": int(
-                dereification_stats["dereification_rule_match_ambiguous"]
-            ),
-            "dereification_rule_match_unmatched": int(
-                dereification_stats["dereification_rule_match_unmatched"]
-            ),
-            "dereification_opportunities": int(dereification_stats["dereification_opportunities"]),
-            "official_framebase_reder_edges": int(len(dereified_edges)),
-        },
-        out_dir,
-        "summary.json",
-    )
-    write_json(
-        {
-            "input": str(source_csv),
-            "framebase_source": framebase.source,
-            "framebase_dir": str(framebase.framebase_dir) if framebase.framebase_dir else None,
-            "framebase_core": str(framebase.framebase_core) if framebase.framebase_core else None,
-            "framebase_index": str(framebase.framebase_index) if framebase.framebase_index else None,
-            "dbp_labels": str(framebase.dbp_labels_path) if framebase.dbp_labels_path else None,
-            "dereification_rules": (
-                str(framebase.dereification_rules_path) if framebase.dereification_rules_path else None
-            ),
-            "columns": cmap.model_dump(),
-        },
-        out_dir,
-        "manifest.json",
+    summary_payload = {
+        **qc_payload,
+        "framebase_source": framebase.source,
+        "framebase_index_used": framebase.framebase_index is not None,
+        "framebase_index_path": str(framebase.framebase_index) if framebase.framebase_index else None,
+        "framebase_core_path": str(framebase.framebase_core) if framebase.framebase_core else None,
+        "dbp_label_count": int(len(framebase.dbp_labels)),
+        "dereification_rules_loaded": int(len(framebase.dereification_rules)),
+        "dereification_rules_matched": int(dereification_stats["dereification_rules_matched"]),
+        "dereification_rule_match_ambiguous": int(
+            dereification_stats["dereification_rule_match_ambiguous"]
+        ),
+        "dereification_rule_match_unmatched": int(
+            dereification_stats["dereification_rule_match_unmatched"]
+        ),
+        "dereification_opportunities": int(dereification_stats["dereification_opportunities"]),
+        "official_framebase_reder_edges": int(len(dereified_edges)),
+    }
+    write_json(summary_payload, out_dir, "summary.json")
+    manifest_payload = {
+        "input": str(source_csv),
+        "framebase_source": framebase.source,
+        "framebase_dir": str(framebase.framebase_dir) if framebase.framebase_dir else None,
+        "framebase_core": str(framebase.framebase_core) if framebase.framebase_core else None,
+        "framebase_index": str(framebase.framebase_index) if framebase.framebase_index else None,
+        "dbp_labels": str(framebase.dbp_labels_path) if framebase.dbp_labels_path else None,
+        "dereification_rules": (
+            str(framebase.dereification_rules_path) if framebase.dereification_rules_path else None
+        ),
+        "columns": cmap.model_dump(),
+    }
+    write_json(manifest_payload, out_dir, "manifest.json")
+    write_web_artifact(
+        out=out_dir,
+        build_manifest=manifest_payload,
+        build_summary=summary_payload,
+        documents=documents,
+        sentences=sentences,
+        frame_instances=frame_instances,
+        frame_elements=frame_elements,
+        nested_edges=nested_edges,
+        direct_edges=dereified_edges,
+        dereification_diagnostics=dereification_diagnostics,
     )
     write_graphml(nodes, out_dir / "graph.graphml", reified_edges, nested_edges, dereified_edges)
 

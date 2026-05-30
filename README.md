@@ -540,7 +540,10 @@ graph_nodes.csv
 graph_edges_reified.csv
 graph_edges_nested.csv
 graph_edges_dereified.csv
+direct_edges.csv
+dereification_diagnostics.csv
 sentence_graphs.jsonl
+web_artifact/
 graph.graphml
 graph.ttl
 qc_report.json
@@ -549,6 +552,11 @@ manifest.json
 ```
 
 The `qc_report.json` and `summary.json` files record coverage and warnings: input rows, number of frame instances, frame elements, nested edges, dereified edges, FrameBase validation counts and parser/data warnings.
+
+The `web_artifact/` folder is a static JSON export for dashboards and
+collaborator review. It contains documents, sentences, frames, frame elements,
+nested edges, direct edges, dereification diagnostics, a summary and a manifest.
+See `docs/web_artifact.md`.
 
 ## No-network smoke test
 

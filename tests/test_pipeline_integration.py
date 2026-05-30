@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import os
 from pathlib import Path
 
@@ -272,6 +273,11 @@ def test_run_pipeline_emits_direct_edges_from_framebase_spin_rules(tmp_path: Pat
     direct_edges = pd.read_csv(output_dir / "direct_edges.csv")
     diagnostics = pd.read_csv(output_dir / "dereification_diagnostics.csv")
     summary = pd.read_json(output_dir / "summary.json", typ="series")
+    artifact_dir = output_dir / "web_artifact"
+    artifact_manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
+    artifact_direct_edges = json.loads(
+        (artifact_dir / "direct_edges.json").read_text(encoding="utf-8")
+    )
 
     assert result["dereified_edges"] == 1
     assert summary["official_framebase_reder_edges"] == 1
@@ -283,6 +289,10 @@ def test_run_pipeline_emits_direct_edges_from_framebase_spin_rules(tmp_path: Pat
     assert edge["object_filler"] == "reduce emissions"
     assert edge["predicate_iri"] == "http://framebase.org/dbp/Capability.hasCapabilityForEvent"
     assert edge["match_tier"] == "frame_target_fe_unique"
+    assert artifact_manifest["artifact_type"] == "fst2framegraph.web_artifact"
+    assert artifact_manifest["schema_version"] == 1
+    assert artifact_direct_edges[0]["subject_filler"] == "Technology"
+    assert artifact_direct_edges[0]["object_filler"] == "reduce emissions"
 
 
 def test_run_pipeline_validates_reified_output_against_framebase_schema(tmp_path: Path) -> None:

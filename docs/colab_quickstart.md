@@ -106,3 +106,7 @@ from pathlib import Path
 summary_path = Path("/content/drive/MyDrive/fst2framegraph_runs/graph/summary.json")
 json.loads(summary_path.read_text())
 ```
+
+The same graph folder includes `web_artifact/`, a static JSON export that can be
+downloaded from Google Drive or shared with a dashboard without rerunning FST or
+FrameBase inference.

@@ -20,6 +20,7 @@ Open:
 ```text
 outputs/toy/sentence_graphs.jsonl
 outputs/toy/graph_edges_reified.csv
+outputs/toy/web_artifact/
 outputs/toy/qc_report.json
 ```
 
@@ -148,3 +149,8 @@ outputs rather than new pickle files.
 FrameBase data is external and not bundled in this repository. Download or register the FrameBase
 files separately, then build `data/framebase/framebase_index.sqlite` with
 `fst2framegraph setup-framebase --out data/framebase --build-index`.
+
+Graph builds also write `web_artifact/`, a static JSON folder for dashboards and
+shared review. It contains documents, sentences, frames, frame elements, nested
+edges, direct edges, dereification diagnostics, a summary and a manifest. See
+`docs/web_artifact.md`.

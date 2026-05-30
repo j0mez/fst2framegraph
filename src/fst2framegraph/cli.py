@@ -43,6 +43,7 @@ from fst2framegraph.io.inspect_outputs import (
 from fst2framegraph.io.read_fst import read_fst_csv
 from fst2framegraph.io.transcripts import clean_transcript
 from fst2framegraph.io.write_outputs import ensure_out_dir, write_csv, write_json, write_jsonl
+from fst2framegraph.io.web_artifact import write_web_artifact
 from fst2framegraph.pipeline_v2 import run_fst2graph
 from fst2framegraph.qc.ambiguity_report import repeated_frame_warnings
 from fst2framegraph.qc.coverage_report import make_qc_report
@@ -867,17 +868,27 @@ def build(
     }
     write_json(qc_payload, out, "qc_report.json")
     write_json(summary_payload, out, "summary.json")
-    write_json(
-        {
-            "input": str(input),
-            "resolved_input": str(input_csv),
-            **fb_paths,
-            "columns": cmap.model_dump(),
-            "rule_count": len(rules),
-            "dbp_label_count": len(labels),
-        },
-        out,
-        "manifest.json",
+    manifest_payload = {
+        "input": str(input),
+        "resolved_input": str(input_csv),
+        **fb_paths,
+        "columns": cmap.model_dump(),
+        "rule_count": len(rules),
+        "dbp_label_count": len(labels),
+    }
+    write_json(manifest_payload, out, "manifest.json")
+
+    write_web_artifact(
+        out=out,
+        build_manifest=manifest_payload,
+        build_summary=summary_payload,
+        documents=documents,
+        sentences=sentences,
+        frame_instances=frame_instances,
+        frame_elements=frame_elements,
+        nested_edges=nested_edges,
+        direct_edges=dereified_edges,
+        dereification_diagnostics=dereification_diagnostics,
     )
 
     if not no_graphml:
